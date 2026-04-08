@@ -4,6 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "zenn:preview": "zenn preview",
+    "article:new": "zenn new:article",
+    "book:new": "zenn new:book",
+    "til:new": "node scripts/new-til.mjs",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
