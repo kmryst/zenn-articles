@@ -15,6 +15,8 @@ NestJS API を ECS Fargate で動かしていて、DB には RDS for PostgreSQL 
 - CI/CD ロールの Permission Boundary と、RDS が裏で作る管理シークレットの前提権限
 - GitHub Actions 上の Terraform apply で見えた state drift
 
+ここで用語だけ先にそろえておくと、この記事でいう **Permission Boundary** は「IAM ロールやユーザーに対して、最終的に使える権限の上限を決める仕組み」です。**state drift** は「AWS 上の実体と Terraform state の認識がズレている状態」を指します。
+
 その結果、一度は **Terraform 管理の Secret + GitHub Secrets 経由のパスワード注入** に退避し、あとで CI/CD 側の権限を直してから、RDS 管理シークレット構成へ戻しました。
 
 ここで先に整理しておくと、GitHub Actions から AWS へ入る認証と、アプリケーションが DB に入る認証は別の話です。
@@ -23,6 +25,8 @@ NestJS API を ECS Fargate で動かしていて、DB には RDS for PostgreSQL 
 - DB 認証情報は Secrets Manager で管理する
 
 今回詰まったのは、主に後者です。
+
+想定読者としては、AWS と Terraform を普段触っていて、ECS への Secret 注入や Permission Boundary 配下の CI/CD で一度は似た詰まり方をしそうな人を置いています。
 
 この記事では、その過程で考えたことを整理します。
 
@@ -211,6 +215,14 @@ count = var.db_secret_arn != null ? 1 : 0
 - `try()` を使う場所と使えない場所を切り分ける
 - late-bound な値だと前提して module input を組み直す
 
+たとえば、plan のどこが unknown になっているかをまず見たいときは、出力をそのまま読むだけでもかなり絞れます。
+
+```bash
+terraform plan
+```
+
+`(known after apply)` が連鎖している場所で `count` や分岐に使っていないかを見ると、原因に当たりやすいです。
+
 ## GitHub Actions では別の問題も混ざった
 
 今回ややこしかったのは、Secrets 周りをいじった直後に apply が落ちたので、「原因も Secret 周りだろう」と思ってしまったことです。
@@ -252,6 +264,19 @@ Error: creating IAM Policy (...): ... EntityAlreadyExists: A policy called ... a
 - AWS 側の重複実体を整理してから apply し直す
 
 本番に近い環境なら、安易な削除より import を先に検討したくなります。
+
+ざっくりした判断基準としては、既存リソースを残したい本番寄りの環境では import を優先し、検証環境で不要な重複実体だと確認できているなら整理して作り直す、という切り分けが取りやすいです。
+
+たとえば調査の入口としては、まず state に何が載っているかを確認し、足りない実体だけ import する流れが取りやすいです。
+
+```bash
+terraform state list
+terraform import aws_iam_role.ecs_task_execution_role hannibal-ecs-task-execution-role
+terraform import aws_iam_policy.ecs_secrets_policy arn:aws:iam::123456789012:policy/hannibal-ecs-secrets-policy
+terraform plan
+```
+
+import のアドレスは module 配下なら `module.<name>.aws_...` の形になるので、実際には state の構造に合わせて読み替えてください。
 
 ## CI の順序でも地味に落ちる
 
