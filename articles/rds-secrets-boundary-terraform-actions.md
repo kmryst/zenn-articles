@@ -1,5 +1,5 @@
 ---
-title: "RDS 管理シークレットに寄せたかったのに撤退した話: Permission Boundary / Terraform / GitHub Actions"
+title: "RDS管理シークレットに寄せたかったが撤退した話: Permission BoundaryとTerraform"
 emoji: "🔐"
 type: "tech"
 topics: ["aws", "terraform", "rds", "githubactions", "secretsmanager"]
