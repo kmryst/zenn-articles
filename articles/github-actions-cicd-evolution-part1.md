@@ -3,7 +3,7 @@ title: "CI/CDパイプライン進化録①: デプロイ失敗率76%→0%に至
 emoji: "🔥"
 type: "tech"
 topics: ["githubactions", "terraform", "aws", "ecs", "codedeploy"]
-published: false
+published: true
 ---
 
 個人開発のポートフォリオプロジェクト [terraform-hannibal](https://github.com/kmryst/terraform-hannibal)（ECS Fargate + Terraform + GitHub Actions）の CI/CD パイプラインを、約5ヶ月かけて構築しました。GitHub Actions の実行ログが、気づけば 691 回を超えていました。そのうち 268 回が失敗です。
