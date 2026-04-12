@@ -1,5 +1,5 @@
 ---
-title: "CI/CDが安定しない人向け：失敗率76%からの設計"
+title: "CI/CDが安定しない人向け：失敗率76%からの設計｜GitHub Actions奮闘記①"
 emoji: "🔥"
 type: "tech"
 topics: ["githubactions", "terraform", "aws", "ecs", "codedeploy"]
