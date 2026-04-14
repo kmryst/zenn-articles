@@ -1,5 +1,5 @@
 ---
-title: "GitHub ActionsのAWSキーを2本→0本にした：OIDC移行で長期クレデンシャルを廃止した"
+title: "GitHub ActionsにAWSキーを置くのをやめた：OIDC移行で長期クレデンシャルを0本にした"
 emoji: "🔑"
 type: "tech"
 topics: ["githubactions", "aws", "iam", "oidc", "terraform"]
@@ -89,7 +89,7 @@ GitHub Secrets に保管された長期キーが漏洩した場合、攻撃者�
 長期キーは定期的にローテーションするのがベストプラクティスです。しかし実際には「AWS でキーを作り直す → GitHub Secrets を更新する」という作業が必要で、属人的な運用タスクになります。
 
 **許可範囲の粒度**  
-長期キー方式では「このキーを持っている者が AWS に触れる」という制御になります。OIDC では trust policy の `sub` 条件で「どの repo の、どのブランチの、どの workflow が使えるか」を指定できます。
+長期キー方式では「このキーを持っている者が AWS に触れる」という制御になります。OIDC では trust policy の `sub` 条件で「どの repo の、どのブランチの実行か」まで指定できます。さらに細かい制御をしたい場合は、reusable workflow や subject claim のカスタマイズを組み合わせる設計もありますが、本記事の構成ではそこまでは扱いません。
 
 ## やったこと
 
@@ -164,7 +164,7 @@ AWS は 2023年以降、一部の OIDC プロバイダー（GitHub を含む）�
 
 `Condition` の `StringEquals` と `StringLike` の使い分けについては後述します。
 
-今回は Terraform の Foundation state が空のため、`terraform apply` ではなく AWS CLI で直接適用しました。
+IAM リソースがまだ Terraform 管理下にある構成なら、OIDC Provider と trust policy の変更も Terraform で適用するのが自然です。今回は Terraform の Foundation state が空のため、`terraform apply` ではなく AWS CLI で直接適用しました。
 
 ```bash
 aws iam update-assume-role-policy \
@@ -245,7 +245,7 @@ gh secret list --repo kmryst/terraform-hannibal
 
 ### PR からも AWS を触る設計は取らなかった
 
-OIDC の許可範囲を `main` ブランチの `workflow_dispatch` のみにしました。PR で `terraform plan`（S3 backend ありで実行）を CI に組み込む設計も選択肢としてありますが、今回は取りませんでした。
+AWS 側の trust policy では `sub` を `repo:kmryst/terraform-hannibal:ref:refs/heads/main` に固定し、GitHub Actions 側では `deploy.yml` / `destroy.yml` を `workflow_dispatch` のみで動かす構成にしました。つまり、`main` ブランチ制限は AWS 側、手動実行限定は GitHub Actions 側で担保しています。PR で `terraform plan`（S3 backend ありで実行）を CI に組み込む設計も選択肢としてありますが、今回は取りませんでした。
 
 理由は次のとおりです。
 
@@ -280,17 +280,28 @@ trust policy の `Condition` で `StringEquals` と `StringLike` を使い分け
 ```
 
 - `aud`（audience）は `sts.amazonaws.com` 固定で完全一致でよいため `StringEquals`
-- `sub`（subject）は将来タグ指定や別ブランチへの拡張を考えてワイルドカード（`*`）が使える `StringLike` にしています。現状はワイルドカードなしの完全一致と同等ですが、例えば `repo:kmryst/terraform-hannibal:*` に変更するだけで全ブランチを許可できます
+- `sub`（subject）は将来タグ指定や別ブランチへの拡張を考えてワイルドカード（`*`）が使える `StringLike` にしています。現状の条件が絞っているのは repo と branch までで、workflow 単位の制御はしていません。例えば `repo:kmryst/terraform-hannibal:*` に変更すると全ブランチを許可できます
 
 ### Terraform apply ではなく AWS CLI で直接適用した理由
 
-今回の変更対象（OIDC Provider と HannibalCICDRole-Dev の trust policy）は、`terraform state rm` で state 外に出ているリソースです。空の state に対して apply を実行すると、Terraform は「このリソースが存在しない」と判断して新規作成を試み、すでに AWS に存在するリソースと衝突してエラーになります。
+今回の変更対象（OIDC Provider と HannibalCICDRole-Dev の trust policy）は、`terraform state rm` で state 外に出ているリソースです。空の state に対して apply を実行すると、Terraform は「このリソースが存在しない」と判断して新規作成を試み、すでに AWS に存在するリソースと衝突してエラーになります。ここは「OIDC では CLI が推奨」という意味ではなく、「state 外に出した既存 IAM を今回だけ直接更新した」という位置づけです。
 
 そのため、`aws iam create-open-id-connect-provider` と `aws iam update-assume-role-policy` で直接適用しました。コードとしては `terraform/foundation/iam.tf` に定義を残し、ドキュメントと再現性の担保として機能させています。
 
 ## 検証
 
-変更後、`deploy.yml` を `workflow_dispatch` で手動実行し、OIDC 認証が通ることを確認しました。
+変更後、`deploy.yml` を `workflow_dispatch` で手動実行し、OIDC 認証が通ることを確認しました。あわせて、認証直後に `aws sts get-caller-identity` を実行し、IAMユーザーではなく `HannibalCICDRole-Dev` の一時クレデンシャルで動いていることを確認しています。
+
+```bash
+aws sts get-caller-identity
+# {
+#   "UserId": "AROAXXXXXXXXXXXX:GitHubActions",
+#   "Account": "258632448142",
+#   "Arn": "arn:aws:sts::258632448142:assumed-role/HannibalCICDRole-Dev/GitHubActions"
+# }
+```
+
+`Arn` が `assumed-role/HannibalCICDRole-Dev/...` になっていれば、長期キーの IAMユーザーではなく OIDC 経由でロールを引き受けられています。
 
 ```text
 ✓ Post Run aws-actions/configure-aws-credentials@v4
@@ -307,7 +318,7 @@ trust policy の `Condition` で `StringEquals` と `StringLike` を使い分け
 Permission Boundary と AssumeRole の組み合わせは「権限の絞り込み」には有効ですが、長期キーを置いている限り、そのキーが漏洩した場合の影響は消えません。OIDC はキー自体をなくすアプローチで、これによって初めて「GitHub に AWS キーを置かない」状態が実現します。
 
 **許可範囲はキー単位よりトークン条件の方が細かく制御できる**  
-長期キー方式は「このキーを持っている実行者」という粒度でしか絞れません。OIDC の `sub` 条件は「この repo の、この branch の、この job」まで絞れます。今回は `main` ブランチ限定にしましたが、将来必要になれば `job_workflow_ref` を使ってワークフローファイル単位の制御も可能です。
+長期キー方式は「このキーを持っている実行者」という粒度でしか絞れません。今回の OIDC 構成では `sub` 条件で「この repo の、この branch の実行」まで絞れます。workflow 単位まで絞りたい場合は、reusable workflow や subject claim のカスタマイズを含めて別途設計する必要があります。
 
 **設計を変えるたびに trust policy に意図が残る**  
 IAM の trust policy はそのロールが「誰に、何を許可しているか」の記録になります。今回の変更で `Principal` が IAMユーザーから Federated（OIDC Provider）に変わり、`Condition` に repo と branch が明示されました。コードを見るだけで設計意図が伝わる状態になっています。
@@ -321,5 +332,6 @@ IAM の trust policy はそのロールが「誰に、何を許可している�
 ## 参考リンク
 
 - [GitHub Actions: Configuring OpenID Connect in Amazon Web Services](https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services)
+- [GitHub Actions: OpenID Connect reference](https://docs.github.com/actions/reference/openid-connect-reference)
 - [AWS: Creating OpenID Connect (OIDC) identity providers](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_create_oidc.html)
 - [aws-actions/configure-aws-credentials: OIDC support](https://github.com/aws-actions/configure-aws-credentials#assuming-a-role)
