@@ -24,13 +24,15 @@ published: false
 
 ## なぜローカル品質ゲートが必要だったか
 
+DevOps の原則に「**Shift Left**（左にシフトせよ）」があります。問題を「できるだけ早いフェーズで検出する」ほど、修正コストが下がるという考え方です。CI でのチェックは PR を出した後、つまり「右側」にある品質ゲートです。
+
 CI（GitHub Actions）で `terraform fmt -check` や `tflint` を回すのは正しい一方で、次の痛みがありました。
 
 - PR を出してから落ちるので、手戻りが遅い
 - 「ローカルでは気づけたはずのミス」が CI を赤くしてしまう
 - 秘密情報の混入は、**リモートに出る前**に止めたい
 
-そこで「コミットの直前」を関所にして、**落とすべきものを落とす**ようにしました。
+そこで「コミットの直前」を関所にして、チェックを**より左側に置く**ようにしました。
 
 ## 用語の整理（最小限）
 
@@ -103,7 +105,7 @@ rule "terraform_required_providers" {
 
 ### `.gitleaks.toml`（詰まった点）
 
-gitleaks は v8.25.0 以降で、global allowlist の書き方が `[allowlist]` から `[[allowlists]]` に変わっています。最初に古い書き方を置くとエラーになります。
+gitleaks v8.30.1 で確認しています。v8.25.0 以降、global allowlist の書き方が `[allowlist]` から `[[allowlists]]` に変わっています。最初に古い書き方を置くとエラーになります。
 
 - NG（例）: `[allowlists] files = [...]`
 - OK: `[[allowlists]] paths = [...]` のように **配列で定義**し、`paths/regexes/commits/stopwords` のいずれかを必ず指定する
@@ -163,16 +165,38 @@ Detect hardcoded secrets..................................................Passed
 - 良い点: 整形の議論が減る（人間が直さなくていい）
 - 注意点: 直されたファイルは再 `git add` が必要（コミットは一度止まる）
 
+自動修正後は、以下のように再追加してコミットします。
+
+```bash
+# fmt に整形されたファイルを再追加してコミット
+git add -u
+git commit -m "..."
+```
+
 #### 2. tflint はちゃんと止める
 
 未使用の `variable` / `local` を意図的に作ると、`terraform_unused_declarations` で `Failed` になりコミットを止められます。
+
+```text
+Terraform validate with tflint...........................................Failed
+- hook id: terraform_tflint
+- exit code: 2
+
+Warning: [Fixable] variable "unused_for_test" is declared but not used
+  on test.tf line 1:
+   1: variable "unused_for_test" {
+```
+
+`[Fixable]` とあるものは `tflint --fix` で自動修正できます。そうでないものは手動で対応が必要です。
 
 #### 3. gitleaks は「全体スキャンでは落ちるが、staged 差分だと落ちない」ケースがあった
 
 ここがいちばん詰まったポイントです。
 
-- `gitleaks dir`（作業ツリー上のファイルを直接スキャン）では **leak を検知**できる
-- しかし pre-commit hook 経由では `gitleaks git --pre-commit --staged` 相当の差分検査になり、**スルー**するケースがありました
+- `gitleaks detect --no-git`（ファイルを直接スキャン）では **leak を検知**できる
+- しかし pre-commit hook 経由では `gitleaks protect --staged` 相当の動作になり、**スルー**するケースがありました
+
+**なぜスルーするのか**: `protect --staged` は「コミット予定の差分（`git diff --cached` の出力）」のみをスキャンします。新規ファイルのコンテンツが diff の形式（`+` プレフィックス付き）に変換された状態では、一部の regex パターンがマッチしないことがあります。一方 `detect --no-git` はファイルを直接読むため、同じ内容でも検知できます。
 
 :::message alert
 「ローカルの pre-commit だけで secrets を完全に防ぐ」は、スキャン対象の差分で穴が空く可能性があります。
@@ -187,8 +211,16 @@ Detect hardcoded secrets..................................................Passed
 
 ## 最終的な落とし所（恒久策）
 
-- ローカルは **fmt/tflint を強く**して、手戻りを最小化する
-- secrets はローカルでも見るが、**最終防衛線は CI で `gitleaks git` もしくは GitHub Action を回す**（ここは次の改善）
+Shift Left の文脈では、**一段目（ローカル）で速く落とし、二段目（CI）で確実に落とす**という多層防御が基本です。
+
+- **一段目（ローカル）**: fmt/tflint を強くして手戻りを最小化。gitleaks はベストエフォートで動かす
+- **二段目（CI）**: `gitleaks detect` を回して、ローカルで漏れた secrets を確実に止める
+
+どちらかの層だけに頼る設計は、片方が機能しなかったときにノーガードになります。
+
+:::message
+`pre-commit install` は**リポジトリを clone するたびに1回実行が必要**です。これを忘れると hook が効かない状態で開発が進みます。チームで使う場合は README やセットアップスクリプトに明記しておくことを推奨します。
+:::
 
 ## 学び
 
@@ -203,6 +235,8 @@ Detect hardcoded secrets..................................................Passed
 - `pre-commit` の導入手順（PATH、初回セットアップ）を README に明記して、再現性を上げる
 
 ## 参考資料
+
+（いずれも 2026年4月時点）
 
 - [pre-commit-terraform](https://github.com/antonbabenko/pre-commit-terraform)
 - [Gitleaks](https://github.com/gitleaks/gitleaks)
