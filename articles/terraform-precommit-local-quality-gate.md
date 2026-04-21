@@ -193,10 +193,10 @@ Warning: [Fixable] variable "unused_for_test" is declared but not used
 
 ここがいちばん詰まったポイントです。
 
-- `gitleaks detect --no-git`（ファイルを直接スキャン）では **leak を検知**できる
-- しかし pre-commit hook 経由では `gitleaks protect --staged` 相当の動作になり、**スルー**するケースがありました
+- `gitleaks dir`（作業ツリー上のファイルを直接スキャン）では **leak を検知**できる
+- しかし pre-commit hook 経由では `gitleaks git --pre-commit --staged` 相当の差分検査になり、**スルー**するケースがありました
 
-**なぜスルーするのか**: `protect --staged` は「コミット予定の差分（`git diff --cached` の出力）」のみをスキャンします。新規ファイルのコンテンツが diff の形式（`+` プレフィックス付き）に変換された状態では、一部の regex パターンがマッチしないことがあります。一方 `detect --no-git` はファイルを直接読むため、同じ内容でも検知できます。
+このケースでは、作業ツリー上のファイルを直接読むスキャンと、staged 差分を対象にする pre-commit hook で検知結果が分かれました。差分スキャンだけに頼ると、検査対象や入力形式の違いで見逃しが残る可能性があります。
 
 :::message alert
 「ローカルの pre-commit だけで secrets を完全に防ぐ」は、スキャン対象の差分で穴が空く可能性があります。
@@ -214,7 +214,7 @@ Warning: [Fixable] variable "unused_for_test" is declared but not used
 Shift Left の文脈では、**一段目（ローカル）で速く落とし、二段目（CI）で確実に落とす**という多層防御が基本です。
 
 - **一段目（ローカル）**: fmt/tflint を強くして手戻りを最小化。gitleaks はベストエフォートで動かす
-- **二段目（CI）**: `gitleaks detect` を回して、ローカルで漏れた secrets を確実に止める
+- **二段目（CI）**: `gitleaks git` もしくは `gitleaks/gitleaks-action` を回して、ローカルで漏れた secrets を確実に止める
 
 どちらかの層だけに頼る設計は、片方が機能しなかったときにノーガードになります。
 
