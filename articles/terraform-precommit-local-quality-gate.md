@@ -3,7 +3,7 @@ title: "TerraformのPR失敗をpre-commitで手前に寄せた：fmt/tflint/gitl
 emoji: "🚧"
 type: "tech"
 topics: ["terraform", "precommit", "tflint", "gitleaks", "githubactions"]
-published: false
+published: true
 ---
 
 ## 対象読者
