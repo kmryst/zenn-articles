@@ -1,5 +1,5 @@
 ---
-title: "terraform plan が PR のたびに AccessDenied で止まり続けた — IAM の S3 権限を個別列挙からやめた理由"
+title: "terraform plan の S3 AccessDenied を IAM で解消した話"
 emoji: "🪣"
 type: "tech"
 topics: ["aws", "iam", "terraform", "githubactions"]
