@@ -12,6 +12,8 @@ PR Check に `terraform plan` を追加しようとするとき、「ワーク�
 
 想定読者は、Terraform + GitHub Actions + AWS OIDC の構成で PR 連動 plan を組もうとしている方です。
 
+特に、deploy / destroy 用の強い Role を PR から使い回さず、plan 専用 Role を分けたい場合の事前チェックリストとして読めるようにしています。
+
 :::message
 この記事は個人開発ポートフォリオ [terraform-hannibal](https://github.com/kmryst/terraform-hannibal)（ECS Fargate + Terraform + GitHub Actions）での実装前調査をもとにしています。
 :::
