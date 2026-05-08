@@ -10,9 +10,13 @@ published: true
 
 想定読者は、Terraform の S3 backend + DynamoDB state lock を使っていて、突然 plan や apply が止まるようになった方です。
 
+:::message
+この記事は、既存の S3 backend で `dynamodb_table` を使っている構成向けの復旧記録です。Terraform 公式では DynamoDB-based locking は deprecated とされており、新規構成では S3 lockfile（`use_lockfile = true`）を使う設計が推奨されます。
+:::
+
 ## 先に結論
 
-DynamoDB の state lock テーブルに保存されている Digest（state ファイルの MD5 ハッシュ）が、S3 の実際の state ファイルと一致していなかったことが原因でした。
+DynamoDB の state lock テーブルに保存されている Digest（Terraform が state 整合性確認に使う値）が、S3 の実際の state ファイルと一致していなかったことが原因でした。
 
 対処は2段階です。
 
@@ -32,8 +36,15 @@ IAM 最小権限化の作業中、`terraform plan` を実行したら処理が�
 ```text
 Error: Error acquiring the state lock
 
-Error message: ConditionalCheckFailedException: ...
+Error message: ConditionalCheckFailedException: The conditional request failed
+Lock Info:
+  ID:        <空またはゼロ値>
+  Path:      YOUR-BUCKET/foundation/terraform.tfstate
+  Operation: OperationTypePlan
+  ...
 ```
+
+`ConditionalCheckFailedException` は「DynamoDB の条件付き書き込みに失敗した」ことを意味します。Terraform は lock 取得時に Digest の一致を条件に PutItem を試みるため、Digest が食い違っているとこのエラーになります。
 
 state lock の取得に失敗しています。`terraform force-unlock` で解除しようとしても効かない状況でした。
 
@@ -65,6 +76,8 @@ DynamoDB の lock テーブルには次のような項目が格納されます�
 
 `-lock=false` は「ロックが取得できないときの緊急回避策」として使うオプションです。便利ですが、後からこういう副作用が出ることがあります。
 
+チーム運用・CI/CD 環境では、GitHub Actions のログを確認して `-lock=false` が使われたジョブがないかを調べると原因特定が早くなります。個人開発でも手元の shell history に残っていることがあります。
+
 :::message alert
 `-lock=false` は緊急時のみ使用し、通常の apply では使わないことを強く推奨します。使った場合は Digest の不整合が起きていないか確認してください。
 :::
@@ -83,10 +96,18 @@ DynamoDB の Digest を S3 state の現在の MD5 に合わせます。
 | lock テーブル | DynamoDB の Digest | Terraform が期待している MD5 |
 | lock の種類 | `LockID` の末尾 | `-md5` なら Digest 管理用の項目 |
 
-S3 と DynamoDB の値が一致していれば Digest 不整合ではありません。その場合は、別プロセスが lock を保持している、権限が足りない、backend 設定が違う、などを疑います。
+S3 と DynamoDB の値が一致していれば Digest 不整合ではありません。その場合は、別プロセスが lock を保持している（`terraform force-unlock` で解除できる可能性がある）、IAM 権限が足りない、backend 設定が違う、などを疑います。
 
-まず S3 の state ファイルの現在の MD5 を確認します。
+まず S3 の state ファイルの現在の MD5 を取得します。**最も確実な方法は `terraform state pull` を使うことです。**
 
+```bash
+terraform state pull | md5sum
+```
+
+これは Terraform が backend から直接 state を取得してハッシュを計算するため、ETag の曖昧さがありません。出力された MD5 の値（末尾の ` -` を除く）を次のステップで使います。
+
+:::message
+ETag でも代替できますが注意が必要です。multipart upload や SSE-KMS / SSE-C では ETag が MD5 にならない場合があります。確認する場合は次のコマンドを使い、ETag が `"` で囲まれていればクォートを除いた値を使います。
 ```bash
 aws s3api head-object \
   --bucket YOUR-TERRAFORM-STATE-BUCKET \
@@ -94,8 +115,9 @@ aws s3api head-object \
   --query ETag \
   --output text
 ```
+:::
 
-次に DynamoDB 側の Digest を確認します。
+次に DynamoDB 側の現在の Digest を確認します。`LockID` のパスは backend 設定の `key` に対応しているため、自分の設定に合わせて変更してください（例: `key = "foundation/terraform.tfstate"` の場合は `YOUR-BUCKET/foundation/terraform.tfstate-md5`）。
 
 ```bash
 aws dynamodb get-item \
@@ -107,20 +129,23 @@ aws dynamodb get-item \
   --output text
 ```
 
+**この値を手元に記録してから**次のステップに進みます。上書き後に問題が起きたとき、元の Digest を参照できるようにしておくためです。
+
 次に DynamoDB の Digest を更新します。
+
+:::message alert
+`aws dynamodb put-item` は同じ primary key の item を置き換えます。対象が末尾 `-md5` の Digest 管理用 item であることを確認してから実行してください。`--condition-expression 'attribute_exists(LockID)'` を付けることで、LockID の typo による新規 item の誤作成を防げます。
+:::
 
 ```bash
 aws dynamodb put-item \
   --table-name terraform-state-lock \
   --item '{
     "LockID": {"S": "YOUR-BUCKET/foundation/terraform.tfstate-md5"},
-    "Digest": {"S": "ffbe2bb9864446160499c4c500b8ec9e"}
-  }'
+    "Digest": {"S": "ここに terraform state pull | md5sum の出力値"}
+  }' \
+  --condition-expression 'attribute_exists(LockID)'
 ```
-
-:::message
-S3 の ETag は `"` で囲まれた形式で返ってくることがあります。DynamoDB に入れるのはクォートを除いた MD5 値です。
-:::
 
 ### 復旧後の確認
 
@@ -228,3 +253,4 @@ import 後に `terraform plan` を実行すると `1 to change` に変わり、�
 - [Terraform: S3 backend](https://developer.hashicorp.com/terraform/language/backend/s3)
 - [Terraform: force-unlock command](https://developer.hashicorp.com/terraform/cli/commands/force-unlock)
 - [AWS CLI: dynamodb put-item](https://docs.aws.amazon.com/cli/latest/reference/dynamodb/put-item.html)
+- [Amazon S3: Checking object integrity](https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html)
