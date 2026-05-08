@@ -301,4 +301,3 @@ required status check 化は、plan job の skip 条件が整理できてから�
 - [GitHub Docs: Security hardening for GitHub Actions](https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions)
 - [GitHub Docs: OpenID Connect in AWS](https://docs.github.com/en/actions/how-tos/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services)
 - [Terraform: plan command](https://developer.hashicorp.com/terraform/cli/commands/plan)
-
