@@ -26,7 +26,7 @@ DynamoDB の state lock テーブルに保存されている Digest（Terraform 
 復旧作業で重要なのは、`force-unlock` を反射的に打たないことです。今回壊れていたのは「ロックを持っているプロセス」ではなく、S3 state と DynamoDB Digest の整合性でした。
 
 :::message
-この記事は個人開発ポートフォリオ [terraform-hannibal](https://github.com/kmryst/terraform-hannibal)（ECS Fargate + Terraform + GitHub Actions）での実装記録です。dev 環境のみ・1人運用という前提です。
+この記事は個人開発ポートフォリオ [terraform-hannibal](https://github.com/kmryst/terraform-hannibal)（ECS Fargate + Terraform + GitHub Actions）での実装記録です。dev 環境のみ・1人運用という前提です。Terraform 1.12.1、2026年5月時点の動作確認に基づきます。
 :::
 
 ## 何が起きたか

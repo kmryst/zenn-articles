@@ -15,7 +15,7 @@ PR Check に `terraform plan` を追加しようとするとき、「ワーク�
 特に、deploy / destroy 用の強い Role を PR から使い回さず、plan 専用 Role を分けたい場合の事前チェックリストとして読めるようにしています。
 
 :::message
-この記事は個人開発ポートフォリオ [terraform-hannibal](https://github.com/kmryst/terraform-hannibal)（ECS Fargate + Terraform + GitHub Actions）での実装前調査をもとにしています。
+この記事は個人開発ポートフォリオ [terraform-hannibal](https://github.com/kmryst/terraform-hannibal)（ECS Fargate + Terraform + GitHub Actions）での実装前調査をもとにしています。Terraform 1.12.1、2026年5月時点の動作確認に基づきます。
 :::
 
 ## この記事での前提
