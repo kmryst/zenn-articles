@@ -52,6 +52,20 @@ PR plan を安全に動かすには、ワークフローを書く前に次の5�
 
 `terraform plan` は必ず S3 backend に接続して state を読みます。既存の validate ステップが `-backend=false` を使っていても、plan では backend 接続が必要です。
 
+また、S3 backend の state locking は今は S3 lockfile（`use_lockfile = true`）が推奨です。既存構成で `dynamodb_table` を使っている場合は、その方式が deprecated であることを前提に、PR plan 実装とあわせて移行方針も確認しておきます。
+
+```hcl
+terraform {
+  backend "s3" {
+    bucket       = "YOUR_TERRAFORM_STATE_BUCKET"
+    key          = "environments/dev/terraform.tfstate"
+    region       = "ap-northeast-1"
+    use_lockfile = true
+    encrypt      = true
+  }
+}
+```
+
 ```yaml
 # validate（backend不要）
 - run: terraform validate -no-color
@@ -59,21 +73,53 @@ PR plan を安全に動かすには、ワークフローを書く前に次の5�
 
 # plan（backend接続が必要）
 - run: |
-    terraform init -backend=true  # S3 + DynamoDB に接続
-    terraform plan -lock=false -out=tfplan
+    terraform init -input=false
+    terraform plan -lock=false -refresh=false -out=tfplan
 ```
 
-確認すべき点は次の2つです。
+`-input=false` は CI で対話プロンプトを無効にするために必要です。省略すると backend 設定が不完全な場合にハングします。
 
-### plan は `-lock=false` で実行する
+`-refresh=false` については次の項で説明します。
 
-`terraform plan` は state を読むだけで書きません。DynamoDB ロックを取得する必要はないため、`-lock=false` をつけます。DynamoDB への `PutItem`/`DeleteItem` は plan 専用 Role に付与しません。
+確認すべき点は次の3つです。
+
+### backend の locking 方式を確認する
+
+S3 backend で lock を取る方式は、主に次の2つです。
+
+| 方式 | 設定 | 状態 |
+|---|---|---|
+| S3 lockfile | `use_lockfile = true` | 現在の推奨 |
+| DynamoDB-based locking | `dynamodb_table = "..."` | deprecated |
+
+新規に組む場合は S3 lockfile を使います。既存構成が DynamoDB-based locking の場合は、すぐに plan workflow へ進む前に「既存のまま一旦組むのか」「先に S3 lockfile へ移行するのか」を決めておくと、IAM 権限と障害時の見方がぶれません。
+
+### PR plan で lock を取るか、refresh するかを決める
+
+`terraform plan` は state を読みます。通常の手元実行や apply 前の最終確認では lock を取る意味がありますが、PR Check ではレビュー補助として扱い、deploy / destroy とぶつかった時に CI を詰まらせないため `-lock=false` を選ぶ設計もあります。
+
+この記事では、PR plan を「最終確定値」ではなくレビュー補助として扱うため、`-lock=false` を前提にします。この場合、lock 取得用の write 権限は plan 専用 Role に付与しません。
+
+`-refresh` についても同様に設計方針を決めます。デフォルトは `-refresh=true` で、Terraform は plan 実行前に state 内の全リソースに対して read 系 API を呼び出して実態と同期します。これは plan の精度が上がる一方、**state に含まれる全リソースへの describe/list/get 権限が plan Role に必要になります**。
+
+| 設定 | 挙動 | PR plan での推奨 |
+|---|---|---|
+| `-refresh=true`（デフォルト） | 全リソースに read API を叩いて state を最新化してから差分を計算 | apply 前の最終確認向き |
+| `-refresh=false` | state ファイルの内容をそのまま使って差分を計算 | PR レビュー補助向き（権限が少なくて済む） |
+
+この記事では `-refresh=false` を前提にします。PR plan はあくまで「このコードを apply したら何が変わるか」を確認するためのものであり、インフラの現在状態との乖離（ドリフト）検出は apply 直前の plan に任せます。
 
 ```bash
-# plan Roleに不要な権限（含めない）
-dynamodb:PutItem    # lock取得
-dynamodb:DeleteItem # lock解放
+# PR plan を -lock=false で実行するなら含めない
+s3:PutObject       # state 書き込み
+s3:DeleteObject    # state 削除
+s3:PutObject       # .tflock 作成
+s3:DeleteObject    # .tflock 削除
+dynamodb:PutItem   # DynamoDB lock 取得
+dynamodb:DeleteItem # DynamoDB lock 解放
 ```
+
+逆に、PR plan でも厳密に lock を取る設計にするなら、S3 lockfile では `terraform.tfstate.tflock` への `s3:GetObject` / `s3:PutObject` / `s3:DeleteObject` が必要です。DynamoDB-based locking を使い続ける場合は、DynamoDB の lock 操作権限が必要になります。
 
 ### state ファイルには機密値が含まれる場合がある
 
@@ -82,6 +128,14 @@ S3 の state ファイルには RDS パスワードや ARN などの機密値が
 ## 2. OIDC 認証の確認
 
 既存のデプロイ用 Role（`refs/heads/main` 限定）は PR Check から assume できません。**PR 専用の IAM Role** を別途作成する必要があります。
+
+workflow 側では、OIDC token を発行するために `id-token: write` が必要です。
+
+```yaml
+permissions:
+  contents: read
+  id-token: write
+```
 
 ### Trust Policy の Subject は `pull_request` event に限定する
 
@@ -115,17 +169,22 @@ plan job に Environment を付けると Trust Policy の Subject が一致し�
 
 ## 3. IAM 権限の確認
 
-plan に必要な権限は `read/describe/list/get` 系のみです。次を原則として policy を設計します。
+この記事のように `terraform plan -lock=false` を前提にする場合、plan に必要な権限は `read/describe/list/get` 系を中心に設計します。
 
 **含めるもの（plan に必要な read 系）**:
 - `terraform init` 用の S3 state 読み取り（`s3:GetObject`、`s3:ListBucket`）
 - terraform refresh が呼ぶ describe/list/get 系
 - S3 バケット属性の読み取り（注意点は後述）
 
+**PR plan でも lock を取る場合だけ含めるもの**:
+- S3 lockfile 方式: `.tflock` への `s3:GetObject` / `s3:PutObject` / `s3:DeleteObject`
+- DynamoDB-based locking 方式: DynamoDB の lock 操作用権限
+
 **含めないもの（plan には不要）**:
 - `iam:PassRole`
 - `s3:PutObject`/`s3:DeleteObject`（state への書き込み）
-- `dynamodb:PutItem`/`dynamodb:DeleteItem`（lock の取得・解放）
+- `s3:PutObject`/`s3:DeleteObject`（`-lock=false` で実行する場合の `.tflock` 作成・削除）
+- `dynamodb:PutItem`/`dynamodb:DeleteItem`（`-lock=false` で実行する場合の lock の取得・解放）
 - `secretsmanager:GetSecretValue`
 
 ### S3 バケット属性の read 権限について
@@ -151,8 +210,8 @@ jobs:
 
 `if` 条件を書かないと、fork PR で `aws-actions/configure-aws-credentials` が実行され、OIDC token の生成を試みます（失敗しますが、不要なエラーが出る）。
 
-:::message
-`pull_request` event と `pull_request_target` event は挙動が異なります。fork PR のコードを実行できるのは `pull_request_target` のみです。plan には `pull_request` を使い、`pull_request_target` は使いません。
+:::message alert
+`pull_request_target` は fork PR のコードをリポジトリの write 権限と secrets を持った状態で実行できます。悪意ある fork PR が `pull_request_target` をトリガーにすると、OIDC token の取得や secrets の漏洩につながります。plan workflow には `pull_request` を使い、`pull_request_target` は使いません。
 :::
 
 ## 5. plan 結果の秘匿情報の確認
@@ -174,12 +233,19 @@ Terraform は `sensitive = true` の変数を `(sensitive value)` と表示し�
     # テキスト出力のみ保存（binary は保存しない）
     terraform show -no-color tfplan > plan_output.txt
 
+    # PR 上で直接 plan を確認できるように Job Summary に書き出す
+    echo '```' >> "$GITHUB_STEP_SUMMARY"
+    cat plan_output.txt >> "$GITHUB_STEP_SUMMARY"
+    echo '```' >> "$GITHUB_STEP_SUMMARY"
+
 # tfplan（binary）を artifact に上げない
 - uses: actions/upload-artifact@v4
   with:
     name: plan-output
     path: plan_output.txt  # binary の tfplan は含めない
 ```
+
+`GITHUB_STEP_SUMMARY` に書き出すと、PR の Checks タブから plan 結果を直接確認できます。artifact のダウンロードが不要になるため、レビュー補助としての実用性が上がります。sensitive 値の混入確認は `GITHUB_STEP_SUMMARY` への書き出し前に行います。
 
 ### コマンド出力の機密情報に注意する
 
@@ -200,9 +266,19 @@ Terraform は `sensitive = true` の変数を `(sensitive value)` と表示し�
 
 2. pr-check.yml に plan job を追加
    - AWS 認証（OIDC）
-   - terraform init（backend=true）
-   - terraform plan（-lock=false -detailed-exitcode）
-   - テキスト artifact の保存
+   - terraform init（`-input=false`）
+   - terraform plan（`-lock=false -refresh=false -detailed-exitcode`）
+   - テキスト出力の Job Summary への書き出しと artifact 保存
+
+`-detailed-exitcode` は CI 向けのフラグで、exit code の意味を変えます。
+
+| exit code | 意味 |
+|---|---|
+| `0` | 成功・変更なし |
+| `1` | エラー |
+| `2` | 成功・変更あり |
+
+このフラグがないと変更ありの plan も `0` で返るため、「差分があるか」を CI が判定できません。gate job の設計とセットで使います。
 
 3. Job Summary に plan 結果を整形出力（後続）
 
@@ -256,9 +332,11 @@ jobs:
 ```text
 [ ] OIDC Provider が foundation に存在する
 [ ] PR 専用 IAM Role が存在する（pull_request event の Trust Policy）
-[ ] Role の policy に write 系が含まれていない
+[ ] workflow に `permissions: id-token: write` がある
+[ ] S3 backend の locking 方式を確認した（S3 lockfile / deprecated DynamoDB-based locking）
+[ ] Role の policy に state / lock の write 系権限が含まれていない
 [ ] S3 state の GetObject が policy に含まれている
-[ ] terraform plan は -lock=false で実行する
+[ ] terraform plan は -lock=false -refresh=false で実行する方針にした
 [ ] fork PR を skip する if 条件が書いてある
 [ ] binary plan ファイルを artifact に保存しない設計になっている
 [ ] Job Summary に sensitive 値が混入しないことを確認した
@@ -300,4 +378,5 @@ required status check 化は、plan job の skip 条件が整理できてから�
 
 - [GitHub Docs: Security hardening for GitHub Actions](https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions)
 - [GitHub Docs: OpenID Connect in AWS](https://docs.github.com/en/actions/how-tos/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services)
+- [Terraform: S3 backend](https://developer.hashicorp.com/terraform/language/backend/s3)
 - [Terraform: plan command](https://developer.hashicorp.com/terraform/cli/commands/plan)
