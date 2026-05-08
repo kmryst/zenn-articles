@@ -343,6 +343,97 @@ jobs:
 [ ] required status check にする場合、skip を吸収する gate job を設計した
 ```
 
+## ワークフロー全体像
+
+チェックリストの項目をすべて含んだ `pr-check.yml` の骨格です。
+
+```yaml
+name: PR Check
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  terraform-plan:
+    name: terraform plan
+    runs-on: ubuntu-latest
+    # fork PR は skip
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      id-token: write  # OIDC token の発行に必要
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.PR_PLAN_ROLE_ARN }}
+          aws-region: ap-northeast-1
+
+      - name: terraform init
+        run: terraform init -input=false
+        working-directory: terraform/environments/dev
+
+      - name: terraform plan
+        id: plan
+        run: |
+          set +e
+          terraform plan \
+            -lock=false \
+            -refresh=false \
+            -detailed-exitcode \
+            -out=tfplan \
+            -no-color
+          PLAN_EXIT=$?
+          echo "exit_code=$PLAN_EXIT" >> "$GITHUB_OUTPUT"
+          # exit 0: 変更なし / exit 2: 変更あり → どちらも step は成功
+          # exit 1: エラー → step を失敗させる
+          [ "$PLAN_EXIT" -ne 1 ]
+        working-directory: terraform/environments/dev
+
+      - name: Save plan output
+        if: steps.plan.outputs.exit_code != '1'
+        run: |
+          terraform show -no-color tfplan > plan_output.txt
+          # Checks タブから直接確認できるように Job Summary に書き出す
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat plan_output.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+        working-directory: terraform/environments/dev
+
+      - name: Upload plan text
+        if: steps.plan.outputs.exit_code != '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan-output
+          path: terraform/environments/dev/plan_output.txt
+          # binary の tfplan は含めない
+
+  # required status check に設定するのはこちら
+  terraform-plan-gate:
+    name: terraform plan (gate)
+    runs-on: ubuntu-latest
+    if: always()
+    needs: terraform-plan
+    steps:
+      - run: |
+          case "${{ needs.terraform-plan.result }}" in
+            success|skipped) exit 0 ;;
+            *) exit 1 ;;
+          esac
+```
+
+`vars.PR_PLAN_ROLE_ARN` は GitHub Actions の Variables に設定します（Secrets ではなく Variables で問題ありません。ARN 自体は機密情報ではないため）。
+
+:::message
+このワークフローは「plan のみ・apply なし」の構成です。apply / destroy は別の workflow（`push: branches: [main]`）で管理し、PR Check と混在させません。
+:::
+
 ## 実装後の確認観点
 
 実装後は「job が green になった」だけで終わらせず、次の観点を確認します。
