@@ -3,7 +3,7 @@ title: "本番IAMロールを壊さずに最小権限化した — candidateロ�
 emoji: "🔐"
 type: "tech"
 topics: ["terraform", "aws", "iam", "devops"]
-published: false
+published: true
 ---
 
 IAM ロールの最小権限化をいきなり本番ロールで試みると、権限を削りすぎて日常オペレーションが止まるリスクがあります。この記事では、candidate ロールを使って安全に検証してから本体に反映する戦略と、Terraform apply で実際に踏んだ落とし穴を記録します。
