@@ -236,3 +236,5 @@ DynamoDB table と lock 権限はこの段階で保持しているため、戻�
 - 完了判断は validate ではなく、実Roleでの lockfile 作成・削除と `refresh=true` plan まで見る
 
 次は1週間の安定確認後に、DynamoDB locking を外して S3 lockfile 単独運用へ進めます。
+
+<!-- republish-trigger: 2026-05-09 -->
