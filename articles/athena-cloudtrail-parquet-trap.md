@@ -1,5 +1,4 @@
 ---
-
 title: "Athena で CloudTrail ログを読もうとしたら2段階でハマった"
 emoji: "🪤"
 type: "tech"
