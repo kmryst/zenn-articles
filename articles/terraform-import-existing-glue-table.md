@@ -291,3 +291,5 @@ terraform -chdir=terraform/foundation state rm \
 - [Terraform: State](https://developer.hashicorp.com/terraform/language/state)
 - [Terraformのimportコマンドとimportブロックを試してみた | DevelopersIO](https://dev.classmethod.jp/articles/terraform-import-command-and-import-block/)
 - [既存 AWS リソースを Terraform 化するハンズオン | Zenn](https://zenn.dev/y_u_t_a/articles/052b9f6621a148)
+
+<!-- redeploy: 2026-05-14 -->
