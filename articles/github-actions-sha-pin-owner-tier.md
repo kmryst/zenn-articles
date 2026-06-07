@@ -14,7 +14,7 @@ published: false
 
 - `uses: owner/action@<sha> # vX.Y.Z` 形式なら Dependabot が SHA と同一行コメントを同時に更新してくれる。「diff が SHA の羅列で読めない」という前回の不採用理由は、この形式を知らなかったことが原因だった
 - GitHub-owned（`actions/*`, `github/codeql-action/*`）は `@vX.Y.Z`、それ以外は `@<sha> # vX.Y.Z` の 2-tier で整理すると、Dependabot alerts の維持と改ざん耐性をアクション種別で分担できる。ただし「Tier A は alerts を維持できる」は **repo 側の vulnerability alerts 設定が有効であること**が前提になる
-- pin 先は「floating major tag（`@vX`）が今この瞬間に指している commit」が起点。最新版への更新ではなく pin と upgrade を分離する。ただし **active advisory がある場合は今の参照先を確認してから pin する**。SHA pin は固定であって浄化ではない
+- pin 先は「floating major tag（`@vX`）が今この瞬間に指している commit」が起点。最新版への更新ではなく pin と upgrade を分離する。ただし **active advisory がある場合は known-safe な commit を確認してから pin する**。SHA pin は固定であって浄化ではない
 
 :::message
 この記事は terraform-hannibal（個人の DevOps ポートフォリオ）を題材にしています。チーム規模は1人、対象環境は dev 環境のみ、権限境界は OIDC + Permission Boundary で管理しています。
@@ -119,7 +119,7 @@ Tier A の「Dependabot alerts を維持する」は、参照形式を `@vX.Y.Z`
 
 2-tier より軽い方針（semver patch + Dependabot）で十分な条件：
 
-- secrets を持たない CI（lint・test のみで、cloud credentials を渡さない）
+- secrets を持たない CI（lint・test のみで、cloud credentials を渡さず、`GITHUB_TOKEN` の権限も `permissions: contents: read` 程度に最小化している）
 - GitHub 公式 action が中心で、外部 action の数が少ない
 - org policy や compliance 要件がない個人 repo
 - 運用負荷を優先し、Dependabot alerts + version updates の組み合わせで補完できると判断した場合
