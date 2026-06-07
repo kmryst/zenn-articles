@@ -1,9 +1,9 @@
 ---
-title: "仮タイトル"
+title: "トレードオフ過ぎるバージョン管理"
 emoji: "🔒"
 type: "tech"
 topics: ["githubactions", "dependabot", "cicd", "devops", "security"]
-published: false
+published: true
 ---
 
 ## 対象読者
