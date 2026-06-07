@@ -52,9 +52,9 @@ Dependabot version updates は、`uses:` 行の末尾に `# vX.Y.Z` 形式のイ
 
 コメントをもらったタイミングで、もう一つの文脈が重なっていた。
 
-2026年3月19日、`aquasecurity/trivy-action`（GitHub Actions 用ラッパー）について、攻撃者が漏洩した credentials を使って悪意ある releases を公開した。`trivy-action` の exposure window は約12時間。CI 上で SSH keys・cloud credentials・Kubernetes tokens などを窃取するマルウェアが実行される状態が続いた。
+2026年3月19日、攻撃者が漏洩した credentials を使い、`aquasecurity/trivy-action` の version tags を悪性コミットへ書き換えた。`trivy-action` の exposure window は約12時間。CI 上で SSH keys・cloud credentials・Kubernetes tokens などを窃取するマルウェアが実行される状態が続いた。
 
-`trivy-action` として公式 advisory（GHSA-69fq-xp46-6x23）に記載されている affected range は **v0.35.0 より前**のタグだ。`trivy-action` が使う Trivy binary、内部で呼ぶ `aquasecurity/setup-trivy` などは別コンポーネントであり、それぞれ異なる affected range と exposure window を持つ。これらを混同すると影響範囲の評価がずれるので注意する。
+公式 advisory（GHSA-69fq-xp46-6x23）に記載されている `trivy-action` の affected range は **v0.35.0 より前**のタグだ。`trivy-action` が内部で呼ぶ `aquasecurity/setup-trivy` や、実行時に取得する Trivy binary はそれぞれ別コンポーネントで、affected range と exposure window が異なる。これらを混同すると影響範囲の評価がずれる。
 
 **semver tag が可変参照であることの意味**
 
@@ -117,6 +117,13 @@ Tier A の「Dependabot alerts を維持する」は、参照形式を `@vX.Y.Z`
 - self-hosted runner でサプライチェーンリスクが高い
 - Dependabot alerts の代替手段（別ルートの脆弱性通知）がある
 
+2-tier より軽い方針（semver patch + Dependabot）で十分な条件：
+
+- secrets を持たない CI（lint・test のみで、cloud credentials を渡さない）
+- GitHub 公式 action が中心で、外部 action の数が少ない
+- org policy や compliance 要件がない個人 repo
+- 運用負荷を優先し、Dependabot alerts + version updates の組み合わせで補完できると判断した場合
+
 ## 実装：floating tag 起点で pin 先を決める
 
 **通常の原則：floating tag が今指す commit に pin する**
@@ -130,10 +137,11 @@ Tier A の「Dependabot alerts を維持する」は、参照形式を `@vX.Y.Z`
 本来の手順：
 
 1. 対象 action に active advisory / GHSA がないかを確認する（GitHub Advisory Database、または `gh api` で GHSA を検索する）
-2. advisory がなければ floating tag が今指す commit に pin する
-3. advisory があれば patched / safe とされているバージョンの commit SHA を確認してから pin する
+2. composite action（`action.yml` に `runs.using: composite` があり内部で別 `uses:` を呼ぶ形式）の場合は `action.yml` を確認し、内部でさらに `uses:` している action や、実行時に取得する binary / image の version も確認対象に含める。trivy-action が `setup-trivy` を呼び Trivy binary を取得するのがこの例にあたる
+3. advisory がなければ floating tag が今指す commit に pin する
+4. advisory があれば patched / safe とされているバージョンの commit SHA を確認してから pin する
 
-terraform-hannibal の初回 pin（PR #355）では、この advisory の確認を明示的には実施していなかった。結果的に問題はなかったが、本来は pin 前に確認すべき手順だ。事後確認の結果は次のセクションに記録する。
+terraform-hannibal の初回 pin（PR #355）では、この advisory の確認を明示的には実施していなかった。事後に確認した範囲では差し替えるべき advisory は見つからなかったが、本来は pin 前に確認すべき手順だ。事後確認の結果は次のセクションに記録する。
 
 ### SHA の取得方法
 
@@ -196,7 +204,7 @@ full-length SHA で照合すること。短縮 SHA は別コミットと衝突�
 |---|---|---|
 | `github/codeql-action` | v4.36.2 | 過去に GHSA があるが、v4.36.2 は affected range 外 |
 | `aquasecurity/trivy-action` | v0.36.0（SHA: `ed142fd0...`） | GHSA-69fq-xp46-6x23 の affected range（v0.35.0 より前）の外 |
-| `trivy-action` 内の `setup-trivy` | v0.36.0 に内包 | v0.36.0 は patched version（`setup-trivy` v0.2.6 以降）に相当 |
+| `trivy-action` 内の `setup-trivy` | `aquasecurity/setup-trivy@3fb12ec12f41e471780db15c232d5dd185dcb514 # v0.2.6` | patched version。transitive action の SHA も確認できる |
 | Trivy CLI（`trivy-action` の default） | v0.70.0 相当 | インシデントで affected とされた v0.69.4 とは別 |
 | SHA と `# vX.Y.Z` コメントの一致 | 全 Tier B action | 逆引きで一致を確認済み |
 
