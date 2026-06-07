@@ -54,11 +54,13 @@ Dependabot version updates は、`uses:` 行の末尾に `# vX.Y.Z` 形式のイ
 
 2026年3月19日、`aquasecurity/trivy-action` に悪意ある releases が公開された。攻撃者は漏洩した credentials を使い、GHCR・ECR Public・Docker Hub 上のイメージを差し替えた。CI 上で SSH keys・cloud credentials・Kubernetes tokens などを窃取するマルウェアが実行される状態が約12時間続いた。
 
-**フローティングタグ（`@v0` など）や semver tag（`@v0.35.0` 以前）で参照していたワークフローが影響を受けた。`@<commit-sha>` でピン留めしていたユーザーは影響を受けなかった。**
+フローティングタグ（`@v0` など）や semver tag（`@v0.35.0` 以前）を参照していたワークフローが影響を受けた。インシデント以前から非悪性コミットに pin 済みのワークフローは影響を受けなかった。
+
+ただし「SHA pin なら全員安全」ではない。SHA pin は固定であって浄化ではない。悪性コミットの SHA に pin していれば同様に影響を受ける。正確には「インシデント前に固定した、かつその commit 自体が非悪性だった場合に限り安全だった」だ。advisory が出ている状況で新たに pin する場合は、known-safe なバージョンの commit を確認してから pin する。
 
 terraform-hannibal のワークフローでは `aquasecurity/trivy-action` を security scan で使っていた。このとき `@v0.36.0` の semver tag 指定だった。タグが差し替えられていた場合、その時間帯に CI が走れば悪性コードが実行されていた。
 
-SHA pin はサプライチェーン攻撃に対して「理論的なリスク軽減策」ではなく、「実害を防いだ対策」だという実証があった。
+この事案が示すのは「SHA pin は semver tag より改ざんに強い」という事実であり、「SHA pin さえすれば完全に安全」という保証ではない。
 
 ## 2-tier 方針の設計
 
@@ -78,17 +80,45 @@ SHA pin はサプライチェーン攻撃に対して「理論的なリスク軽
 - **Tier A（`actions/*`, `github/codeql-action/*`）**：`@vX.Y.Z` に固定。Dependabot alerts と security updates を維持する
 - **Tier B（それ以外の全外部 action）**：`@<sha> # vX.Y.Z` に固定。改ざん耐性を優先する
 
-GitHub-owned actions は GitHub Actions platform に近い trust boundary として扱える。改ざん確率が相対的に低く、CodeQL を含め Dependabot alerts の価値が高い。一方、AWS・Docker・HashiCorp などの外部 action は、大手ベンダーであっても自リポジトリから見れば外部依存だ。trivy-action のインシデントが示すように、大手 org が攻撃対象にならないという前提は成立しない。
+GitHub-owned actions は GitHub Actions platform に近い trust boundary として扱える。ここでの選択は「GitHub-owned だから改ざんリスクがない」という信頼ではなく、「改ざんリスクを受容する代わりに Dependabot alerts（特に CodeQL の脆弱性通知）を維持する」という判断だ。一方、非 GitHub-owned action は大手ベンダーであっても外部依存であり、trivy-action のインシデントが示すように大手 org も攻撃対象になる。
 
 「GitHub-owned かどうか」という単純なルールで分けることで、action を追加するときの判断軸がブレない。
 
-不採用にした「全 action を SHA pin」について補足すると、GitHub-owned の Dependabot alerts（特に CodeQL の脆弱性通知）まで捨てるのは過剰と判断した。Tier A は「実行内容の変化を PR の diff として可視化すること」と「alerts の維持」を目的に置く。immutable 参照が必要な改ざん耐性は Tier B の SHA pin が担う、という役割分担にした。
+**Dependabot alerts と version updates の違い**
+
+SHA pin にすると Dependabot の挙動が変わる。alerts と version updates は別物だ。
+
+| | Tier A（GitHub-owned） | Tier B（非 GitHub-owned） |
+|---|---|---|
+| Dependabot alerts（脆弱性通知） | ✅ 有効 | ❌ 無効 |
+| Dependabot version updates（定期更新 PR） | ✅ 有効 | ✅ 有効（SHA とコメントを同時更新） |
+| 改ざん耐性 | semver tag は可変参照 | SHA 固定で改ざん耐性あり |
+
+Tier B では脆弱性通知が届かなくなる。定期的な更新 PR（version updates）は引き続き機能するが、alerts の代替ではない。この欠落は PR review 時の release notes 確認と GitHub Advisory Database の確認で補完する。
+
+不採用にした「全 action を SHA pin」について補足すると、GitHub-owned の Dependabot alerts まで捨てるのは過剰と判断した。Tier A は「実行内容の変化を PR の diff として可視化すること」と「alerts の維持」を目的に置く。immutable 参照が必要な改ざん耐性は Tier B の SHA pin が担う、という役割分担にした。
+
+**この方針を採る条件 / 採らない条件**
+
+この 2-tier 方針が合う条件：
+
+- GitHub-owned action の Dependabot alerts を維持したい（特に CodeQL の通知）
+- 管理できる範囲の action 数（初回の SHA 確定にコストがかかる）
+- 個人〜小規模チームで、人間が action の変更を PR で確認できる体制がある
+
+より厳しい対応（全 SHA pin）を検討する条件：
+
+- prod secrets を扱う action が多く、Dependabot alerts の欠落を許容できない
+- compliance 要件や org policy で full SHA が必須
+- self-hosted runner でサプライチェーンリスクが高い
 
 ## 実装：floating tag 起点で pin 先を決める
 
 SHA pin の実装で最初に迷ったのが「どの SHA を使うか」だった。
 
 「最新 patch version に上げておく」という考え方は pin と upgrade を混同している。pin の目的は「今動いている状態を固定すること」だ。`@vX` で動いていたワークフローは今この瞬間に `@vX` が指す commit で動いている。その commit に pin すれば、確実に動くことが証明された状態で固定できる。未知の patch バージョンへの更新は Dependabot に任せる別の操作として分離する。
+
+ただし advisory が発令中の場合は例外だ。今の参照先が悪性コミットを指している可能性がある。その場合は known-safe なバージョンを確認してから pin する。SHA pin は固定であって浄化ではない。
 
 ### SHA の取得方法
 
@@ -122,8 +152,10 @@ commit SHA が決まったら、対応する semver tag を逆引きしてイン
 
 ```bash
 git ls-remote --tags https://github.com/aws-actions/configure-aws-credentials.git \
-  | grep e7f100cf
+  | grep e7f100cf4c008499ea8adda475de1042d6975c7b
 ```
+
+full-length SHA で照合すること。短縮 SHA は別コミットと衝突する可能性がある。また、結果が action の本家リポジトリの commit であることを確認してから使う。
 
 `refs/tags/v6.2.0` が見つかれば、こう書く。
 
@@ -181,7 +213,7 @@ git ls-remote --tags https://github.com/aws-actions/configure-aws-credentials.gi
 
 2-tier の判断軸はシンプルだ。「GitHub-owned かどうか」で Dependabot alerts を維持するか改ざん耐性を優先するかを切り分ける。このルールで action を追加するときの判断がブレなくなる。
 
-trivy-action 2026年3月のインシデントは「SHA pin が実害を防いだ」という実証だ。大手ベンダーの action を使っていれば安全、という前提は成立しない。supply chain のリスクを「理論的に存在する」ではなく「実際に起きる」として扱う根拠になっている。
+trivy-action 2026年3月のインシデントは、大手ベンダーの action も攻撃対象になること、そして SHA pin が semver tag より改ざんに強いことを実際の事案で示している。「SHA pin さえすれば完全に安全」ではなく、「既知の安全なコミットに固定することで改ざんリスクを下げる」という位置づけだ。
 
 pin と upgrade は別操作として分離する。floating tag が今指す commit に pin する。その後の更新は Dependabot に任せる。この順序が崩れると、pin の意味がなくなる。
 
