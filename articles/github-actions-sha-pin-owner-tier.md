@@ -58,7 +58,7 @@ Dependabot version updates は、`uses:` 行の末尾に `# vX.Y.Z` 形式のイ
 
 **semver tag が可変参照であることの意味**
 
-この事案で確認すべき核心は「semver tag は可変参照」という事実だ。`@v0.36.0` のような semver tag も、リポジトリ側で別の commit に移動させることができる。攻撃者がタグを悪性コミットへ移動させれば、CI はその内容を実行する。SHA pin はこの移動に対して耐性がある。`uses:` に書いた full-length SHA が指す commit の内容は変わらないからだ。
+この事案で確認すべき核心は「semver tag は一般に immutable とは限らない」という事実だ。リポジトリ側で tag を別の commit に書き換えることは技術的に可能であり、攻撃者が悪用すれば CI はその内容を実行する。SHA pin はこの書き換えに対して耐性がある。`uses:` に書いた full-length SHA が指す commit の内容は変わらないからだ。
 
 **「SHA pin なら常に安全」ではない**
 
