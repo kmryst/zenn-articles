@@ -100,6 +100,69 @@ GitHub-owned actions は GitHub Actions platform に近い trust boundary とし
 
 Tier B では脆弱性通知が届かなくなる。定期的な更新 PR（version updates）は引き続き機能するが、alerts の代替ではない。この欠落は PR review 時の release notes 確認と GitHub Advisory Database の定期確認で補完する。
 
+### Tier B の Dependabot PR をどうレビューするか
+
+「release notes と advisory を確認する」だけでは、確認場所も合否基準も曖昧なままだ。Tier B の更新 PR では、次の順序で確認する。
+
+#### 1. PR 本文から release notes を確認する
+
+Dependabot PR の本文では、対象 action 名のリンクに続いて、上流リポジトリから取得できた情報が `Release notes`、`Changelog`、`Commits` として折りたたまれている。terraform-hannibal で実際に作成された [`actions/setup-node` の更新 PR #325](https://github.com/kmryst/terraform-hannibal/pull/325) と [`actions/checkout` の更新 PR #328](https://github.com/kmryst/terraform-hannibal/pull/328) でも、この3箇所から変更内容と比較元を確認できた。どちらも Tier A の PR であり、Tier B で SHA とコメントが同時更新される実例は次回の更新 PR で確認する。ただし、release notes などを確認する場所は同じ PR 本文である。
+
+ここでは、少なくとも次を確認する。
+
+- breaking change と必要な runner / runtime の最低バージョン
+- `inputs` / `outputs` の変更
+- `permissions`、Secrets、OIDC、artifact の扱いの変更
+- 内部で呼び出す action、ダウンロードする binary / image の変更
+
+上流に release や changelog がない場合、PR 本文に該当セクションが出ないことがある。その場合は action 名のリンクから上流リポジトリを開き、`Releases`、`CHANGELOG`、旧 tag と新 tag の `Compare` の順で確認する。PR 本文に情報がないことを「変更なし」とは判断しない。
+
+#### 2. GitHub Advisory Database で action 名を検索する
+
+[GitHub Advisory Database](https://github.com/advisories) を開き、検索欄へ次のように入力する。2026年6月13日時点では、この検索で `trivy-action` 関連の advisory が2件表示されることを確認した。
+
+```text
+ecosystem:actions affects:aquasecurity/trivy-action
+```
+
+該当する advisory を開き、`Severity`、`Affected versions`、`Patched versions`、公開日・更新日を確認する。更新先が affected range の外にあり、必要なら patched version 以上であることを確認する。
+
+CLI では同じ確認を次のように行える。
+
+```bash
+gh api --method GET /advisories \
+  -f ecosystem=actions \
+  -f affects='aquasecurity/trivy-action' \
+  --jq '.[] | .ghsa_id as $id | .severity as $severity |
+    .vulnerabilities[] |
+    select(.package.name == "aquasecurity/trivy-action") |
+    [$id, $severity, .vulnerable_version_range,
+     (.first_patched_version // "none")] | @tsv'
+```
+
+1件の advisory に action 本体、内部 action、取得する binary など複数の package が記録されることがある。`.vulnerabilities[0]` をそのまま対象 action の情報だと決めつけず、`package.name` がレビュー対象と一致する行を読む。
+
+また、検索結果が0件でも「脆弱性が存在しない」ことの証明にはならない。GitHub Advisory Database に登録された一致がないという意味に限られるため、上流リポジトリの `Security > Advisories`、release notes、メンテナの incident notice も確認する。
+
+#### 3. 新しい tag と SHA の対応を確認する
+
+Dependabot が更新した `@<sha>` と `# vX.Y.Z` が同じ commit を指すことを確認する。
+
+```bash
+git ls-remote https://github.com/aquasecurity/trivy-action.git \
+  refs/tags/v0.36.0 'refs/tags/v0.36.0^{}'
+```
+
+annotated tag の場合は2行返る。`uses:` に書く commit SHA は `^{}` 側であり、tag object SHA ではない。さらに、取得した SHA が fork ではなく action 本家リポジトリの commit であることも確認する。
+
+#### 4. action の内側も確認する
+
+composite action なら、新しい SHA の `action.yml` / `action.yaml` を開き、内部の `uses:` と実行スクリプトを確認する。Docker action や JavaScript action でも、外部 binary・image・install script を実行時に取得していないかを見る。
+
+たとえば `trivy-action` は内部で `setup-trivy` を呼び、さらに Trivy binary を取得する。`trivy-action` 本体のバージョンだけでなく、内部 action の SHA と取得される Trivy のバージョンまで確認して、初めて更新後の実行内容を評価できる。
+
+最後に CI を確認し、`deploy.yml` や `destroy.yml` のように PR では実行されない workflow を変更する場合は、必要に応じて手動実行で確認する。**PR 本文の metadata、Advisory Database、実際に実行されるコード、CI の4つを確認してからマージする**のが Tier B のレビュー完了条件だ。
+
 Tier A の「Dependabot alerts を維持する」は、参照形式を `@vX.Y.Z` にするだけでは成立しない。**repo 側の vulnerability alerts 設定が有効でなければ alerts は届かない**。この点は後述する。
 
 **この方針を採る条件 / 採らない条件**
@@ -109,6 +172,7 @@ Tier A の「Dependabot alerts を維持する」は、参照形式を `@vX.Y.Z`
 - GitHub-owned action の Dependabot alerts を維持したい（特に CodeQL の通知）
 - 管理できる範囲の action 数（初回の SHA 確定にコストがかかる）
 - 個人〜小規模チームで、PR で action の変更を人間が確認できる体制がある
+- Tier B の更新 PR ごとに、PR 本文・Advisory Database・実行コード・CI の4点を確認できる
 
 より厳しい対応（全 SHA pin）を検討する条件：
 
@@ -272,6 +336,9 @@ trivy-action 2026年3月のインシデントは、大手ベンダーの action 
 ## 参考
 
 - [GitHub Docs — Security hardening for GitHub Actions](https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions)
+- [GitHub Docs — Dependabot version updates](https://docs.github.com/en/code-security/concepts/supply-chain-security/about-dependabot-version-updates)
+- [GitHub Docs — Browsing security advisories in the GitHub Advisory Database](https://docs.github.com/en/code-security/how-tos/report-and-fix-vulnerabilities/fix-reported-vulnerabilities/browse-advisory-database)
+- [GitHub Docs — REST API endpoints for global security advisories](https://docs.github.com/en/rest/security-advisories/global-advisories)
 - [aquasecurity/trivy discussions #10425 — Security Incident 2026-03-19](https://github.com/aquasecurity/trivy/discussions/10425)
 - [GHSA-69fq-xp46-6x23 — trivy-action security advisory](https://github.com/advisories/GHSA-69fq-xp46-6x23)
 - [GitHub Actions のコミットハッシュ指定（ピン留め）を Dependabot で自動的に更新する — kakakakakku.hatenablog.com](https://kakakakakku.hatenablog.com/entry/2026/03/24/123518)
