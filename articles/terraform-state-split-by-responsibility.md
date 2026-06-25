@@ -3,7 +3,7 @@ title: "Terraform stateを4分割した：module数ではなく責務で境界�
 emoji: "🧩"
 type: "tech"
 topics: ["terraform", "aws", "iac", "devops", "githubactions"]
-published: false
+published: true
 ---
 
 Terraform の root module / state をどこで分けるかは、単純そうで難しい判断です。
