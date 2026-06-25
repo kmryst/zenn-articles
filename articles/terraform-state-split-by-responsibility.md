@@ -51,6 +51,23 @@ Terraform の root module / state をどこで分けるかは、単純そうで�
 この3つを同時に見ると、1 state は大きすぎ、module ごとの 9 state は細かすぎました。
 このプロジェクトでは、4 state が分離の利点と運用コストのバランスがよい落としどころでした。
 
+## 数字で見る変更
+
+この記事で出す数字は、2026-06-25 時点の Terraform 設定を `rg '^resource "'` で数えた `resource` block 数です。
+`for_each` / `count` で展開された実リソース数や、destroy 済み state 内のオブジェクト数ではありません。
+
+| 観点 | 分割前 | 分割後 |
+|---|---:|---:|
+| アプリ環境の root module | 1 | 4 |
+| アプリ環境の state | 1 | 4 |
+| アプリ環境の `resource` block | 63 block 相当が1 state | `network` 16 / `database` 2 / `service` 39 / `cdn` 6 |
+| ECS / ALB / CodeDeploy 変更時の主な apply 対象 | アプリ環境全体 | `service` state |
+
+`foundation` はこの分割前から別 state です。記事時点では `foundation` 側に 50 個の `resource` block がありますが、日常の deploy / destroy とは lifecycle が違うため、今回のアプリ環境4分割とは別枠で扱います。
+
+この数字から分かるのは、`service` がまだ大きめであることです。
+ただし、ECS / ALB / CodeDeploy / monitoring は一緒に変わるため、ここをさらに割るより、まずは `network` / `database` / `cdn` を日常変更の主語から外すことを優先しました。
+
 ## 運用コンテキスト
 
 同じ Terraform 構成でも、運用コンテキストが違うと正解は変わります。今回の前提は次の通りです。
@@ -177,6 +194,23 @@ flowchart LR
 
 矢印は「右側が左側の output を読む」という意味です。
 `foundation` は IAM / OIDC / 監査などの永続基盤なので、日常の deploy / destroy 順序には入れません。
+
+## 実装前に決めたルール
+
+state 分割では、ファイルを動かし始める前にルールを固定しました。
+ここが曖昧なまま実装すると、途中で「このリソースはどちらの state か」を何度も判断することになります。
+
+| 決めたこと | ルール |
+|---|---|
+| state 名 | `network` / `database` / `service` / `cdn` |
+| 依存方向 | `network -> database -> service -> cdn` の一方向 |
+| SG の所有 | ALB / ECS / RDS の SG は `network` に集約 |
+| output の出し方 | 下位 state は上位 state が必要な root output だけを公開 |
+| deploy 順序 | `network -> database -> service -> cdn` |
+| destroy 順序 | `cdn -> service -> database -> network` |
+| migration | コード変更と `terraform state mv` の実行を分ける |
+
+この表は、実装中の迷いを減らすだけでなく、レビュー時のチェックリストにもなります。
 
 ## 実装ポイント1: 下位 state は root output だけ公開する
 
@@ -387,8 +421,28 @@ https://developer.hashicorp.com/terraform/language/state/refactor
 - 移動後に plan で意図しない再作成がないことを確認する
 - 失敗時に戻す手順を用意する
 
+移行漏れの検知は、設計が正しいかとは別の問題です。
+今回は専用スクリプトまでは作らず、次の3つをレビュー対象にしました。
+
+| 確認対象 | 見ること |
+|---|---|
+| root module ごとの resource / module 一覧 | どの state が何を持つかが設計と一致しているか |
+| 旧 state address と新 state address の対応 | `module.security_groups` -> `module.vpc` のような移動漏れがないか |
+| `terraform state mv` 対象一覧 | state 操作の前に、人間が address 対応を追えるか |
+
+もっと規模が大きい移行なら、旧ファイル一覧と新しい配置表を比較するスクリプトを用意した方が安全です。
+このプロジェクトでは、まず移行ガイドを正本にして、実行前レビューで抜け漏れを潰す運用にしました。
+
 state 分割の設計と、既存 state の移行作業は、同じ PR に詰め込むほど危険になります。
 設計・コード変更・state 操作を分けることで、レビューする観点も分けられます。
+
+## AIに任せた部分と人間が握った部分
+
+この分割では、root module の作成、output 整理、workflow 修正、移行ガイドのたたき台作成には AI を使いました。
+一方で、state 境界、SG の所有、`terraform_remote_state` の参照方向、migration を実行してよいかの判断は人間のレビュー対象にしました。
+
+Terraform state の操作は、間違えると実リソースの再作成や管理外れにつながります。
+AI に任せやすいのは機械的な展開であり、blast radius と rollback の判断は人間が握る、という分担にしています。
 
 ## 危なかったところ
 
