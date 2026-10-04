@@ -3,7 +3,7 @@ title: "Key Vault参照は本当に得か — Terraform stateから秘密値を�
 emoji: "🔐"
 type: "tech"
 topics: ["terraform", "azure", "azurecontainerapps", "keyvault", "security"]
-published: true
+published: false
 ---
 
 API キーやクライアントシークレットを Secret に入れても、その値を Terraform に渡していれば state に残ることがあります。`sensitive = true` は CLI の表示を伏せるだけで、保存される場所が減るわけではありません。
