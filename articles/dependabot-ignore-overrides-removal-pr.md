@@ -146,12 +146,45 @@ npm `overrides` を同じ仕組みに載せたのが PR #315 です。判定方�
 
 ```mermaid
 flowchart TB
-  subgraph all["判定に使った状態: A と B をまとめて外す"]
-    a1["a@1（b に依存しない）"]
+  question["判定したいこと<br/>override B だけ外せるか？"]
+
+  subgraph actual["評価すべき状態（マージ後）"]
+    direction TB
+    keep["override A を残し<br/>override B だけ外す"]
+    a2["a@2 が残る"]
+    vulnerable["b@1.4（脆弱）<br/>override B が必要"]
+    keep --> a2
+    a2 -->|依存が残る| vulnerable
   end
-  subgraph keep["マージ後の状態: A を残して B だけ外す"]
-    a2["a@2"] --> bOld["b@1.4（脆弱）"]
+
+  subgraph probe["誤った判定状態"]
+    direction TB
+    remove["override A と B を<br/>まとめて外す"]
+    a1["a@1 に戻る"]
+    absent["b への依存が消える<br/>B の advisory は出ない"]
+    remove --> a1
+    a1 -.->|b に依存しない| absent
   end
+
+  question --> actual
+  question --> probe
+  actual --> conclusion
+  probe --> conclusion
+  conclusion["依存グラフが異なる<br/>右側の結果は<br/>B だけ外す根拠にできない"]
+
+  classDef neutral fill:#ffffff,stroke:#64748b,color:#1e293b
+  classDef dependency fill:#eaf2fb,stroke:#537aa5,color:#183b56
+  classDef vulnerable fill:#fff1f0,stroke:#b7463d,color:#8b241c,stroke-width:2px
+  classDef absent fill:#f1f5f9,stroke:#94a3b8,color:#475569,stroke-dasharray:5 3
+  classDef conclusion fill:#183b56,stroke:#183b56,color:#ffffff,stroke-width:3px,font-weight:bold
+  class question,keep,remove neutral
+  class a2,a1 dependency
+  class vulnerable vulnerable
+  class absent absent
+  class conclusion conclusion
+  style actual fill:#f8fbff,stroke:#7593b7,color:#183b56
+  style probe fill:#f7f8fa,stroke:#9ca3af,color:#475569,stroke-dasharray:5 3
+  linkStyle default stroke:#64748b,stroke-width:1.5px
 ```
 
 A と B をまとめて外すと `a` は 1 系に戻り、`b` は依存グラフから消えます。B の advisory は再出現しないので、B が「不要」に見えます。A は外すと自分の advisory が再出現するので「まだ必要」です。結果として、**A を残したまま B だけを外す** PR が立ちます。マージ後は `a@2` が `b` を引くので、脆弱な `b` が戻ってきます。
