@@ -68,7 +68,7 @@ npm の `overrides` や Yarn の `resolutions` は、入れるときの理由は
 
 週次ジョブの赤も同じで、気づいた人が差分を作るまで赤のまま残ります。Google の SRE 本は第 1 章の冒頭に、SRE で昔から言われている "Hope is not a strategy."（希望は戦略ではない）を掲げています。次は気をつける、で済ませるのをやめ、外す PR そのものを届けることにしました。
 
-https://sre.google/sre-book/introduction/
+[Google SRE Book: Introduction](https://sre.google/sre-book/introduction/)
 
 ## 評価軸
 
@@ -86,7 +86,7 @@ https://sre.google/sre-book/introduction/
 
 `GITHUB_TOKEN` で行った操作は、原則として新しいワークフロー実行を作りません。PR の作成や更新で起きる `pull_request` イベントも、実行が承認待ちの状態になります。そのままでは必須の status check が自動で走らないので、撤去 PR を自動で届ける意味が薄れます。個人の PAT は、有効期限の管理と権限の広さが問題になります。GitHub App なら、権限とインストール先を絞れ、トークンは job の終了時に失効します。
 
-https://docs.github.com/en/actions/concepts/security/github_token
+[GitHub Docs: GITHUB_TOKEN](https://docs.github.com/en/actions/concepts/security/github_token)
 
 ### 依存を解決する job と、書き込む job を分ける
 
