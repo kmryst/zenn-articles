@@ -3,7 +3,7 @@ title: "気合いで忘れないようにする overrides！ ～Hope is not a st
 emoji: "🧹"
 type: "tech"
 topics: ["npm", "yarn", "dependabot", "githubactions", "devops"]
-published: false
+published: true
 ---
 
 npm の `overrides` や Yarn の `resolutions` は、入れるときの理由ははっきりしています。脆弱なバージョンを exact pin している依存がいる、上流のバグで依存解決が落ちる、などです。ところが、上流が直ったあとに外すきっかけはどこにもありません。覚えている人がいれば外れますが、いなければ残り続け、依存の更新を黙って足止めします。
@@ -31,6 +31,7 @@ npm の `overrides` や Yarn の `resolutions` は、入れるときの理由は
 - 自動処理は PR の作成・更新までです。ただし、誤った撤去をマージすれば脆弱な依存や互換性の問題が戻るため、影響範囲を PR だけには限定できません
 - 権限境界: GitHub-hosted の `ubuntu-latest` で job ごとに環境を分け、PR 作成 job だけに GitHub App の秘密鍵とトークン（Contents と Pull requests の Read and write、インストール先はこのリポジトリのみ）を渡します。Dependabot の棚卸し job には Issue 通知用の `GITHUB_TOKEN`（`issues: write`）があり、無権限ではありません
 - 2026-10-05 時点で回避策を削除する PR の自動作成に対応しているのは、npm `overrides`、脆弱性以外の理由で入れた Yarn `resolutions`、Dependabot の `ignore` の 3 種類です。脆弱性対応の Yarn `resolutions` と監査例外はまだです
+- 他のリポジトリから reusable workflow として呼ぶ場合は撤去 PR を作らず、従来どおり赤と Issue コメントで知らせます。GitHub App のインストール先を広げていないためです
 - Yarn 4.18.1、`actions/create-github-app-token` v3、`peter-evans/create-pull-request` v8 で確認しています
 
 :::
@@ -94,7 +95,7 @@ PR を自動で作る仕組みは、脆弱性以外の理由で入れた Yarn `r
 
 棚卸しは毎週、上流の最新のパッケージを引いて依存を解決します。その途中で未検証のコードが動く余地があります（例: git 依存の `prepare` スクリプト）。そこで、リポジトリへ書き込める App の秘密鍵・トークンを持つ job とは環境を分けます。同じ self-hosted runner の環境を再利用する構成では、job を分けるだけでこの境界を再現できません。[GitHub の runner に関するセキュリティ資料](https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners)も、この違いを説明しています。
 
-checkout は `persist-credentials: false` にし、Dependabot の試験コマンドへ渡す環境変数からもトークンを除いています。ただし、同じ job の評価器は Issue 通知用トークンを持つため、環境変数の除去だけで job 全体を無権限にはできません。ここで分離しているのは App のリポジトリ書き込み権限です。
+checkout は `persist-credentials: false` にし、Dependabot の試験コマンドへ渡す環境変数からもトークンを除いています。ただし、同じ job で試験の結果を判定するスクリプト（評価器）は Issue 通知用トークンを持つため、環境変数の除去だけで job 全体を無権限にはできません。ここで分離しているのは App のリポジトリ書き込み権限です。
 
 ```mermaid
 %%{init: {"flowchart": {"subGraphTitleMargin": {"top": 8, "bottom": 16}}}}%%
@@ -172,7 +173,7 @@ A と B をまとめて外すと `a` は 1 系に戻り、`b` は依存グラフ
 
 - 各 override を、**それだけを外し他は残した状態** で 1 回だけ計測する
 - 同じ計測で、台帳記載の advisory が severity を問わず再出現しないこと、外す前に無かった High / Critical が出ないことを確かめる
-- 外せるもののうち、台帳順の先頭 1 件だけを `removal.json` に書く。残りは Job Summary に `Waiting` として出し、翌週以降に 1 件ずつ PR にする
+- 外せるもののうち、台帳順の先頭 1 件だけを `removal.json` に書く。残りは Job Summary に `Waiting` として出す。撤去 PR がマージされるまでは翌週以降も同じ 1 件の PR が更新され、マージ後の実行で次の 1 件を PR にする
 - PR 作成 job も、1 件以外の撤去要求を拒否する
 
 3 回目のレビューでは、クリティカルな指摘はありませんでした。
@@ -181,7 +182,7 @@ A と B をまとめて外すと `a` は 1 系に戻り、`b` は依存グラフ
 
 | 起きうること | 影響 |
 | --- | --- |
-| 複数件が同時に外せるようになっても、1 週に 1 件ずつしか進まない | 遅いだけです。2026-10-05 時点で npm の台帳は 0 件で、件数が少ないので実害は小さいと判断しました |
+| 複数件が同時に外せるようになっても、撤去 PR が 1 本マージされるごとに 1 件ずつしか進まない | 遅いだけです。2026-10-05 時点で npm の台帳は 0 件で、件数が少ないので実害は小さいと判断しました |
 | 単独では外せないが、まとめてなら外せる組み合わせは検出できない | 不要な override が残ります。仕組みを入れる前と同じで、悪化はしません |
 
 ただし、これで撤去全体の安全性が保証されるわけではありません。[`npm audit` が調べるのは既知の脆弱性](https://docs.npmjs.com/cli/v11/commands/npm-audit#description)であり、この判定が止めるのは台帳記載 advisory の再出現と、新規の High / Critical です。台帳未記載の Low / Moderate や、ビルド・実行時の互換性は別途確認が必要です。これらも自動撤去の条件に含めたい環境では、判定基準や試験を追加します。
@@ -243,7 +244,6 @@ Dependabot の `ignore` にも期限の仕組みはありません。こちら�
 ## 今後の改善
 
 - 脆弱性対応の Yarn `resolutions` と、監査例外（修正版のない脆弱性を期限付きで許容する例外）を PR に載せます（Issue #310 の残り）。Yarn 側も 1 件ずつの判定に揃えます
-- この仕組みを他のリポジトリから reusable workflow として呼ぶ場合は、従来どおり赤と Issue コメントで知らせます。GitHub App のインストール先を広げていないためです
 
 ## まとめ
 
