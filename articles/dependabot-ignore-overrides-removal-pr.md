@@ -97,6 +97,7 @@ PR を自動で作る仕組みは、脆弱性以外の理由で入れた Yarn `r
 checkout は `persist-credentials: false` にし、Dependabot の試験コマンドへ渡す環境変数からもトークンを除いています。ただし、同じ job の評価器は Issue 通知用トークンを持つため、環境変数の除去だけで job 全体を無権限にはできません。ここで分離しているのは App のリポジトリ書き込み権限です。
 
 ```mermaid
+%%{init: {"flowchart": {"subGraphTitleMargin": {"top": 8, "bottom": 16}}}}%%
 flowchart LR
   subgraph probe["棚卸し job（App の秘密鍵・トークンなし）"]
     A[回避策を外して依存を再解決] --> B["removal.json（外す識別子と、lockfile が変わるか）"]
