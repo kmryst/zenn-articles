@@ -1,5 +1,5 @@
 ---
-title: "Key Vault参照は本当に得か — Terraform stateから秘密値を外す設計判断"
+title: "Key Vault参照のメリデメ — Terraform stateから秘密値を外す設計判断"
 emoji: "🔐"
 type: "tech"
 topics: ["terraform", "azure", "azurecontainerapps", "keyvault", "security"]
