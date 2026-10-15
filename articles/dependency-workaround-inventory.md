@@ -3,7 +3,7 @@ title: "依存関係の workaround 大統一理論！！！ ～泣きながら�
 emoji: "🗂️"
 type: "tech"
 topics: ["npm", "yarn", "dependabot", "githubactions", "security"]
-published: false
+published: true
 ---
 
 依存パッケージに advisory（脆弱性情報）が出ても、すぐに修正版へ上げられるとは限りません。修正版がまだ無い、修正版が別のメジャーにしか無い、依存元が古いバージョンを exact pin している。こうしたときのために、`resolutions` で解決バージョンを上書きする、CI の監査に期限付きの例外（監査例外）を入れる、Dependabot alert を dismiss する、といった仕組みを使います。脆弱性だけでなく、ビルドの不具合やバージョンの不整合を避けるために、`resolutions` や Dependabot の `ignore` で更新を止めることもあります。この記事では、どちらもまとめて workaround と呼びます。
