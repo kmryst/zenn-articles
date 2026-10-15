@@ -6,31 +6,32 @@ topics: ["npm", "yarn", "dependabot", "githubactions", "security"]
 published: false
 ---
 
-依存パッケージに advisory（脆弱性情報）が出ても、すぐに修正版へ上げられるとは限りません。修正版がまだ無い、修正版が別のメジャーにしか無い、依存元が古いバージョンを exact pin している。こうしたときのために、`resolutions` で解決バージョンを上書きする、CI の監査に期限付きの例外（監査例外）を入れる、Dependabot alert を dismiss する、といった仕組みを使います。
+依存パッケージに advisory（脆弱性情報）が出ても、すぐに修正版へ上げられるとは限りません。修正版がまだ無い、修正版が別のメジャーにしか無い、依存元が古いバージョンを exact pin している。こうしたときのために、`resolutions` で解決バージョンを上書きする、CI の監査に期限付きの例外（監査例外）を入れる、Dependabot alert を dismiss する、といった仕組みを使います。脆弱性だけでなく、ビルドの不具合やバージョンの不整合を避けるために、`resolutions` や Dependabot の `ignore` で更新を止めることもあります。この記事では、どちらもまとめて workaround と呼びます。
 
-個人の 4 つのリポジトリで、困るたびにこうした上書き・抑止を 1 つずつ足してきました。1 つはプラットフォーム（reusable workflow を配る側）、3 つはそれを呼ぶ側です。棚卸しすると仕組みは 9 つあり、同じ advisory を CI 側と GitHub 側で別々に止めているのに、互いを参照していませんでした。この記事の目標は、その現状をできるだけ分かりやすく、漏れと重複のない表で表すことです。統一の方針はまだ決めていないので、続編で扱います。
+個人の 4 つのリポジトリで、困るたびにこうした上書き・抑止を 1 つずつ足してきました。1 つは reusable workflow を提供するプラットフォーム、3 つはそれを呼び出す呼び出し側です。棚卸しすると仕組みは 9 つあり、同じ advisory を CI 側と GitHub 側で別々に止めているのに、互いを参照していませんでした。この記事の目標は、その現状をできるだけ分かりやすく、漏れと重複のない表で表すことです。統一の方針はまだ決めていないので、後編で扱います。
 
 ## 対象読者
 
 - `overrides` / `resolutions`、監査の例外、Dependabot の `ignore` や dismiss を併用していて、全体を一覧したことがない人
 - 「この advisory は受容した」という判断を、どこに記録するのが正しいか迷っている人
-- reusable workflow で複数リポジトリに CI を配っていて、配る側と呼ぶ側で何が揃い、何が揃っていないかを知りたい人
+- reusable workflow で複数リポジトリに CI を配っていて、プラットフォームと呼び出し側で何が揃い、何が揃っていないかを知りたい人
 - 前回記事の「回避策を削除する PR を自動で作る仕組み」を読み、対象外の仕組みがどうなっているか気になった人
 
 [前回記事：回避策を削除する PR を自動で作る仕組み](https://zenn.dev/kmryst/articles/dependabot-ignore-overrides-removal-pr)
 
 ## 先に結論
 
-- 依存の上書き・抑止の仕組みは 9 つ、起因と package manager、PR の update の種類で分け、起因不明も含めると 16 行になりました。止めるものは CI の監査 / Dependabot alert / Dependabot の PR / code scanning alert の 4 つです。auto-triage preset は alert を閉じ、新規 security update の PR も作らせません（上書きは「止める」のではなく検知を解消します）
+- workaround の仕組みは 9 つ、起因と package manager、PR の update の種類で分け、起因不明も含めると 16 行になりました。止めるものは CI の監査 / Dependabot alert / Dependabot の PR / code scanning alert の 4 つです。auto-triage preset は alert を閉じ、新規 security update の PR も作らせません（上書きは「止める」のではなく検知を解消します）
 - CI の監査と Dependabot alert は、同じ advisory を別々に検知しています。監査例外で CI を止めても alert は open のまま残り、alert を dismiss しても CI は止まりません。braces の 1 つの advisory が、3 つのリポジトリで CI は監査例外、alert は auto-triage rules と、別々の仕組みで止まっていました
 - 上書きの台帳・外す判定と、撤去 PR の実装はプラットフォーム側だけで、呼び出し側には `overrides` の台帳も判定も届いていません。一方、ticket の `ignore` には台帳と一部のエントリの probe があり、外せると Issue コメントで知らせます。open のままの Dependabot alert 27 件は、Dependabot security updates が修正版に上げられなかったもの（`security_update_not_possible`）が 22 件、修正版そのものが無いものが 5 件で、どちらでもないものはありませんでした。そのうち 3 件だけが監査例外で CI 側で受容済みです
 
 :::message
 **運用コンテキストと前提**
 
-- 題材は個人のポートフォリオリポジトリ 4 つ（すべて public、チームは 1 人）です。[idp-golden-path](https://github.com/kmryst/idp-golden-path)（Backstage ベースの IDP）がプラットフォームで、CI の監査や棚卸しを reusable workflow として配ります。[terraform-hannibal](https://github.com/kmryst/terraform-hannibal)、[ticket-c2c-platform](https://github.com/kmryst/ticket-c2c-platform)、[felis-ai-chatbot](https://github.com/kmryst/felis-ai-chatbot) がそれを呼ぶ側です。以下、idp / hannibal / ticket / felis と略します
+- 題材は個人のポートフォリオリポジトリ 4 つ（すべて public、チームは 1 人）です。[idp-golden-path](https://github.com/kmryst/idp-golden-path)（Backstage ベースの IDP）がプラットフォームで、CI の監査や棚卸しを reusable workflow として配ります。[terraform-hannibal](https://github.com/kmryst/terraform-hannibal)、[ticket-c2c-platform](https://github.com/kmryst/ticket-c2c-platform)、[felis-ai-chatbot](https://github.com/kmryst/felis-ai-chatbot) が呼び出し側です。以下、idp / hannibal / ticket / felis と略します
 - idp の依存管理は 3 系統です。Backstage 本体の `backstage/`（Yarn 4.18.1 の workspaces）、リポジトリのルート（npm）、ソフトウェアテンプレートが新しいリポジトリへ配る雛形 `skeleton/`（npm）。呼び出し側 3 つは npm です（felis は Python の uv も）
 - 件数は、注記がない限り 2026-10-15 に GitHub の REST API（GET のみ）、GitHub Actions の実行ログ、リポジトリのファイルで確認した値です。Dependabot alert は `state` を問わず全件取得し、`open` / `auto_dismissed` などの状態ごとに数えています
+- 仕様は 2026-10-15 時点の GitHub Docs と dependabot-core（コミット `d3fa616`）で確認しました
 - この記事は現状の整理です。どう統一するかは検討中で、結論は書いていません
 
 :::
@@ -52,7 +53,7 @@ published: false
 | `resolutions`（Yarn）/ `overrides`（npm） | 推移的依存の解決バージョンを上書きする機能 |
 | セキュリティ起因 / 非セキュリティ起因 | リポジトリでの分類です。advisory への対処として入れたものがセキュリティ起因、ビルドの不具合やバージョンの不整合への対処として入れたものが非セキュリティ起因です |
 | 監査例外（audit exception） | CI の監査（`npm audit` / `yarn npm audit`）で検出された High の advisory を、期限（`expires`、最大 90 日）と追跡 Issue を付けてゲートを通す、このリポジトリの設定。設定名は `scripts/ci/yarn-audit-exceptions.json` / `npm-audit-exceptions.json` と、reusable workflow の input `yarn-audit-exceptions` / `npm-audit-exceptions` です。リスク対応の分類（[NIST の risk response](https://csrc.nist.gov/glossary/term/risk_response)）では risk acceptance に当たりますが、受け入れるのは CI のゲートだけで、Dependabot alert には及びません。リポジトリの運用ドキュメントでは見出しが「期限付き例外」になっていますが、同じものです |
-| workaround（回避策） | Yarn の `resolutions` / npm の `overrides`、監査例外、Dependabot alert の dismiss、auto-triage rules、`ignore`、pull request を閉じる、code scanning alert の dismiss など、依存の脆弱性に対する上書き・抑止を、この記事ではまとめて workaround（回避策）と呼びます。根本的な対応（依存を修正版に更新すること）ができるまでの間、一時的に入れておくものです |
+| workaround（回避策） | 依存の更新や脆弱性の検知に対して、根本的な対応（依存を更新する、不具合や不整合を解消する）ができるまで一時的に入れる上書き・抑止です。セキュリティ起因と非セキュリティ起因の両方を含みます。この記事では、Yarn の `resolutions` / npm の `overrides`、監査例外、Dependabot alert の dismiss、auto-triage rules、`ignore`、pull request を閉じる、code scanning alert の dismiss を扱います |
 | 台帳 | 前回記事と同じく、この記事内の呼び名です。上書き・抑止ごとに理由や対応する advisory を記録する JSON ファイルです |
 | 撤去 PR | 前回記事で紹介した、不要になった上書き・抑止を削除する PR を GitHub App が自動で作る仕組みです |
 | 呼び出し側 | idp-golden-path の reusable workflow を `uses:` で呼び出すリポジトリ（GitHub Docs の caller workflow を持つ側）。リポジトリの docs では消費側とも書いていて、ADR 0008 の「呼び出し側リポジトリ」と同じものです |
@@ -88,7 +89,7 @@ CI の監査は、GitHub の alert の状態を見ていません。
 - `npm audit` は "The audit command submits a description of the dependencies configured in your project to your default registry" と説明されています
 
 [Yarn: npmAuditRegistry](https://yarnpkg.com/configuration/yarnrc#npmAuditRegistry)
-[npm Docs: npm audit](https://docs.npmjs.com/cli/v11/commands/npm-audit#description)
+[npm Docs: npm audit](https://docs.npmjs.com/cli/v11/commands/npm-audit/#description)
 
 そのため、対応ごとに止まる側が決まっています。
 
@@ -109,19 +110,20 @@ CI の監査は、GitHub の alert の状態を見ていません。
 | リポジトリ | 役割 | 参照（ref） | CI の監査 | 監査例外 | Dependency Unblock Check | Dependabot alerts | security updates | version updates | auto-triage preset | code scanning の送り元 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | idp | プラットフォーム | 同一リポジトリ | yarn + npm | 台帳ファイル | あり | 有効 | 有効 | npm ×3、actions | 有効 | CodeQL |
-| hannibal | 呼び出し側 | `@v1`（移動 major タグ） | npm ×2 | input、root のみ | — | 有効 | 有効 | npm ×2、actions | 未確認 | Trivy（Golden Path 外） |
+| hannibal | 呼び出し側 | `@v1`（移動 major タグ） | npm ×2 | input、root のみ | — | 有効 | 有効 | npm ×2、actions | 未確認 | CodeQL + Trivy（Golden Path 外） |
 | ticket | 呼び出し側 | `@v1.7.2`（release tag） | npm ×2 | input、root + frontend | あり | 有効 | 有効 | npm ×2、actions、terraform | 未確認 | Trivy + CodeQL |
 | felis | 呼び出し側 | — | — | — | — | 有効 | 有効 | npm ×2、uv、actions | 未確認 | なし |
 
 - 参照（ref）は、依存関係の reusable workflow を `uses:` で呼ぶときの `@{ref}` です。GitHub Docs の `{ref}` は SHA / release tag / branch で、"Using the commit SHA is the safest option for stability and security" とされています。`v1` は idp の ADR 0008 の移動 major タグで、v1 系の最新に追従します。`v1.7.2` は固定です。idp は同一リポジトリの workflow なので、常にそのコミットの版で動きます。felis は依存関係の workflow を 1 つも呼んでいません
-  [GitHub Docs: Reusing workflows](https://docs.github.com/en/actions/sharing-automations/reusing-workflows)
-- ticket は依存関係・セキュリティ系の workflow（dependency-audit、dependency-unblock-check、codeql、trivy-image、trivy-config）を `@v1.7.2`、それ以外（issue-template-check、markdown-lint、pr-commitlint、sync-labels、toolchain-version-check）を `@v1` で呼んでいて、1 つのリポジトリで 2 つの ref が混ざっています
+  [GitHub Docs: Reusing workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows)
+- ticket は依存関係・セキュリティ系の workflow（dependency-audit、dependency-unblock-check、codeql、security-scan、trivy-image、trivy-config）と pr-policy-check を `@v1.7.2`、それ以外（issue-template-check、markdown-lint、pr-commitlint、sync-labels、toolchain-version-check）を `@v1` で呼んでいて、1 つのリポジトリで 2 つの ref が混ざっています
 - CI の監査は idp の reusable workflow `dependency-audit.yml` です。idp は `pull_request` と週次の `schedule` で起動し、Yarn（`backstage/`）と npm の両方を監査します。hannibal は root と `client`、ticket は root と `frontend` の 2 つの caller job で呼びます。felis は依存関係の workflow を呼ばず、Golden Path 外の監査 workflow もありません
 - 監査例外は、idp では台帳ファイル、呼び出し側では workflow の input（`npm-audit-exceptions`）にインラインの JSON で渡します。hannibal の `client` job には現在この input を設定していないため、例外は渡していません
 - Dependency Unblock Check は、`dependabot.yml` の `ignore` を週次で「もう外せるか」試す reusable workflow です。idp と ticket だけが使っています
 - Dependabot alerts と Dependabot security updates は 4 つとも有効でした（REST API の `vulnerability-alerts` と `automated-security-fixes` で確認）。version updates の列は `dependabot.yml` の `updates` エントリの内訳です
 - auto-triage preset は public リポジトリで既定で有効で、4 つすべてに `auto_dismissed` の alert があります。設定画面（Settings → Advanced Security → Dependabot rules）は API がなく、idp だけ 2026-10-15 に確認しました。有効なのは GitHub preset の "Dismiss low-impact alerts for development-scoped dependencies" 1 つで、custom rules は 0 件です。呼び出し側 3 つの画面は未確認です。`auto_dismissed` の alert が残っていること（最新の `auto_dismissed_at` は hannibal / ticket が 2026-10-06、felis が 10-05）は、その時点で preset が動いた証拠にはなりますが、現在の設定の確認にはならないため、表では「未確認」としています
-- code scanning の送り元は `code-scanning/alerts` の `tool.name` です。「Golden Path 外」は、Spotify が golden path を "the 'opinionated and supported' path to 'build something'" と定義したのに倣い、idp の reusable workflow（`trivy-image.yml` / `trivy-config.yml`）を使わず、hannibal が自分の workflow に `aquasecurity/trivy-action` を直接書いて SARIF を送っていることを指します。felis は code scanning の analyses が 404 でした
+- この記事の表では、「未確認」は確かめる手段（設定画面など）はあるが、まだ確かめていないこと、「不明」は調べても分からなかったこと（記録がない、一次資料にない）を表します
+- code scanning の送り元は、code scanning に analyses を送っているツール（`code-scanning/analyses` の `tool.name`）です。alert の件数は表 3 と表 4 に書きます。hannibal は idp の `codeql.yml` を `@v1` で呼んで CodeQL の analyses を送っていて、alert が 0 件なだけです。「Golden Path 外」は、Spotify が golden path を "the 'opinionated and supported' path to 'build something'" と定義したのに倣い、idp の reusable workflow（`trivy-image.yml` / `trivy-config.yml`）を使わず、hannibal が自分の workflow に `aquasecurity/trivy-action` を直接書いて SARIF を送っていることを指します。felis は code scanning の analyses が 404 でした
   [Spotify Engineering: How We Use Golden Paths to Solve Fragmentation in Our Software Ecosystem](https://engineering.atspotify.com/2020/08/how-we-use-golden-paths-to-solve-fragmentation-in-our-software-ecosystem)
 
 ## 表 2. 仕組みの性質：何を止め、誰が判定し、どこに記録し、どう外すか
@@ -141,7 +143,7 @@ CI の監査は、GitHub の alert の状態を見ていません。
 | npm `overrides`（非セキュリティ起因） | 非セキュリティ | 不整合・不具合の発覚 | 止めない | 止めない | 止めない | 止めない |
 | 監査例外（yarn） | セキュリティ | GHSA の公開 | 止める | 止めない | 止めない | 止めない |
 | 監査例外（npm） | セキュリティ | GHSA の公開 | 止める | 止めない | 止めない | 止めない |
-| Dependabot alert の dismiss | セキュリティ | GHSA の公開 | 止めない | 止める | 不明 | 止めない |
+| Dependabot alert の dismiss | セキュリティ | GHSA の公開 | 止めない | 止める | 未確認 | 止めない |
 | Dependabot auto-triage rules | セキュリティ | GHSA の公開 | 止めない | 止める | 止める（preset の新規 security update） | 止めない |
 | `dependabot.yml` の `ignore`（非セキュリティ起因） | 非セキュリティ | 新バージョンの公開 | 止めない | 止めない | 止める（指定条件による） | 止めない |
 | `dependabot.yml` の `ignore`（セキュリティ起因） | セキュリティ | GHSA の公開 | 止めない | 止めない | 止める（指定条件による） | 止めない |
@@ -151,7 +153,7 @@ CI の監査は、GitHub の alert の状態を見ていません。
 | PR を閉じる（security update） | セキュリティ | GHSA の公開 | 止めない | 止めない | 止める（そのバージョン） | 止めない |
 | code scanning alert の dismiss | セキュリティ | CodeQL などの検出 | 止めない | 止めない | 止めない | 止める |
 
-- 「解消」は抑止ではなく、依存を上書きして検知そのものが消えることです。前の節の `resolutions` 7 件と `overrides` 1 件が実例です
+- 「解消」は抑止ではなく、依存を上書きして検知そのものが消えることです。前の節の `resolutions` の台帳 3 エントリ（7 つの GHSA）と `overrides` 1 エントリが実例です
 - auto-triage rules だけは GitHub の自動処理で、ほかはすべて人が操作します
 - auto-triage の preset で閉じる alert は、新規の security update の PR を作りません（GitHub Changelog 2023-05-02: "automatically dismissed without a notification or new pull request"。現行 Docs も "Rules are applied before alert notifications are sent" としています）。既存 PR が自動で閉じられるかと、手動 dismiss の PR への影響は未確認です
   [GitHub Changelog: Dependabot alerts now automatically dismiss false positives for npm](https://github.blog/changelog/2023-05-02-dependabot-alerts-now-automatically-dismiss-false-positives-for-npm-public-beta/)
@@ -182,7 +184,7 @@ CI の監査は、GitHub の alert の状態を見ていません。
 - 記録の持ち主は、記録を Git で管理できるかです。リポジトリ = リポジトリ内のファイル、GitHub = GitHub 側にしか残らない（alert の `dismissed_reason` / `dismissed_comment`、comment commands の履歴）。「PR を閉じる」は PR のイベント履歴やコメントに記録が残りますが、`ignore-conditions` のエントリにはなりません
 - 台帳は idp の `scripts/ci/` にあります。`yarn-resolutions.json`、`yarn-resolutions-non-security.json`、`npm-overrides.json`（空）、`npm-overrides-non-security.json`（未作成）、`yarn-audit-exceptions.json`、`npm-audit-exceptions.json`、`dependabot-unblock.json`（`dependabot.yml` の `ignore` と 1:1）
 
-「該当なし」はその分類の設定が現在ないこと、「—」は対象外、「なし」は記録や自動処理がないことです。「不明」「未確認」は、起因や効果を確認できていないことを表します。
+「該当なし」はその分類の設定が現在ないこと、「—」は対象外、「なし」は記録や自動処理がないことです。「不明」「未確認」の意味は表 1 の下に書いたとおりです。
 
 ### 表 2c. 外す判定と出口
 
@@ -230,13 +232,18 @@ CI の監査は、GitHub の alert の状態を見ていません。
 | `ignore` の判定 | dependency-unblock-check | `dependency-unblock-check` | `dependabot-unblock-check.mjs` | `schedule`、`workflow_call` | 動く | 呼んでいない | 動く | 呼んでいない |
 | `ignore` の撤去 PR | dependency-unblock-check | `dependabot-ignore-removal-pr` | `dependabot-unblock-check.mjs` | `schedule`、`workflow_call` | 動く | 呼んでいない | 動かない | 呼んでいない |
 
-- workflow は idp の `.github/workflows/dependency-audit.yml` と `dependency-unblock-check.yml`、スクリプトは `scripts/ci/` 配下です。trigger は GitHub Docs の "Workflow triggers are events that cause a workflow to run" の意味で、`workflow_call` は呼び出し側の caller workflow から呼ばれる trigger です。どちらの workflow も `workflow_dispatch` で手動実行できます
 - 「動かない」は、job に `if: github.repository == 'kmryst/idp-golden-path'` が付いていて、呼び出し側で `workflow_call` 経由で呼んでも skip されるものです。`resolutions` / `overrides` の 6 job はこれに加えて `package-manager` が yarn のときだけ動くため、npm で呼ぶ呼び出し側では二重に動きません。「呼んでいない」は、表 1 のとおりその workflow を caller workflow から呼んでいないものです
 - `ignore` の判定は呼び出し側でも動きますが、撤去 PR の job は idp 専用です。呼び出し側では判定が「外せる」になると exit 10 と追跡 Issue へのコメントで知らせます（表 2c の出口）
+- `resolutions` の撤去 PR は非セキュリティ起因の台帳が対象で、セキュリティ起因の `resolutions` は判定でジョブが失敗するだけです（表 2c）。ticket の `frontend/package.json` の `overrides` 2 件は、同期検査も判定も idp 専用のため、台帳にも棚卸しにも載っていません
+
+:::details 表 2d の実装の補足（workflow の場所、GitHub App、job の分かれ方、参照先のコミット）
+
+- workflow は idp の `.github/workflows/dependency-audit.yml` と `dependency-unblock-check.yml`、スクリプトは `scripts/ci/` 配下です。trigger は GitHub Docs の "Workflow triggers are events that cause a workflow to run" の意味で、`workflow_call` は呼び出し側の caller workflow から呼ばれる trigger です。どちらの workflow も `workflow_dispatch` で手動実行できます
 - 撤去 PR を作る主体は GitHub App です。`actions/create-github-app-token` で App のトークンを取り、`peter-evans/create-pull-request` で PR を作ります。App は idp にしかインストールしていません
 - 監査例外の判定は、idp の Yarn（`backstage/`）と呼び出し側の npm が同じ `dependency-audit` job です。idp 自身の root / skeleton（npm）だけは別 job `npm-dependency-audit`（idp 専用）で、同じ `npm-audit-policy.mjs` を使います
 - hannibal の `@v1` と ticket の `@v1.7.2` は同じコミット（`dca5d23`、2026-10-13）を指していて、この表の job と `if:` 条件はどちらにも含まれています。idp の `main`（`1aa21e0`）との差分も、この 2 つの workflow にはありません
-- `resolutions` の撤去 PR は非セキュリティ起因の台帳が対象で、セキュリティ起因の `resolutions` は判定でジョブが失敗するだけです（表 2c）。ticket の `frontend/package.json` の `overrides` 2 件は、同期検査も判定も idp 専用のため、台帳にも棚卸しにも載っていません
+
+:::
 
 ## 監査例外とは何か
 
@@ -311,7 +318,15 @@ GitHub の alert を dismiss するときは、理由として dismissed reason 
 
 `ignore` は Dependabot version updates だけでなく、Dependabot security updates の PR にも効きます。options reference の `ignore` には "Security updates" の印が付いており、`@dependabot ignore` も "In Dependabot pull requests for grouped version updates and security updates, you can use comment commands to ignore and un-ignore updates" と説明されています。
 
-ただし、security update でどの条件が効くかは指定の形で変わります。GitHub Docs には書かれていないため、Dependabot の実装（dependabot-core）で確かめました。security update のときは `versions` だけが効き、`update-types` は無視されます。
+ただし、security update でどの条件が効くかは指定の形で変わります。GitHub Docs には書かれていないため、Dependabot の実装（dependabot-core）で確かめました。security update のときは `versions` だけが効き、`update-types` は無視されます。条件なし（`dependency-name` だけ）の `ignore` は、内部で `>= 0` の範囲として渡されるため、security update でも全バージョンが止まります。
+
+| `ignore` の指定 | version update | security update |
+| --- | --- | --- |
+| `update-types` | 止まる | 止まらない |
+| `versions`（範囲） | 止まる | 範囲内なら止まる |
+| 条件なし（`dependency-name` だけ） | 止まる | 止まる |
+
+:::details 実装の抜粋と「条件なし」の解釈（dependabot-core）
 
 ```ruby
 def ignored_versions(dependency, security_updates_only)
@@ -323,19 +338,15 @@ def ignored_versions(dependency, security_updates_only)
 [dependabot-core: ignore_condition.rb#L40-L46](https://github.com/dependabot/dependabot-core/blob/d3fa616f4a200a8950d1a6f1917d9f33d4f28538/common/lib/dependabot/config/ignore_condition.rb#L40-L46)
 [dependabot-core: job.rb#L462-L474](https://github.com/dependabot/dependabot-core/blob/d3fa616f4a200a8950d1a6f1917d9f33d4f28538/updater/lib/dependabot/job.rb#L462-L474)
 
-| `ignore` の指定 | version update | security update |
-| --- | --- | --- |
-| `update-types` | 止まる | 止まらない |
-| `versions`（範囲） | 止まる | 範囲内なら止まる |
-| 条件なし（`dependency-name` だけ） | 止まる | 止まる |
-
 「条件なし」の行は、実装の 2 行目（`ALL_VERSIONS`）だけを読むと version update にしか効かないように見えます。しかし ticket の `fastify` の `ignore`（条件なし）は、Dependabot の実行ログの job 定義では `"version-requirement": ">= 0"` として渡されていて、`job.rb` はこれを `versions: [">= 0"]` に変換します。そのため security update でも全バージョンが止まります。fastify の alert は現在すべて `fixed` なので、今の影響はありません。
+
+:::
 
 4 つのリポジトリの `dependabot.yml` の `ignore` 12 件のうち 11 件は `update-types: ["version-update:semver-major"]` で、security update は止めません。idp の `@dependabot ignore` コメント 5 件は `>= 7.a, < 8` のような範囲で登録されているため、修正版がその範囲にあれば security update も止めます。呼び出し側 3 つの `@dependabot ignore` コメントは 0 件でした（各ディレクトリの最新の version update の実行ログの `ignore-conditions` で確認）。
 
 どちらの場合も、止まるのは PR だけです。alert は open のまま残ります（"There is no interaction between the settings specified in the `dependabot.yml` file and Dependabot security alerts."）。
 
-[GitHub Docs: About Dependabot security updates](https://docs.github.com/en/code-security/dependabot/dependabot-security-updates/about-dependabot-security-updates)
+[GitHub Docs: About Dependabot security updates](https://docs.github.com/en/code-security/concepts/supply-chain-security/dependabot-security-updates)
 
 ## PR を閉じただけでも、そのバージョンは止まる
 
@@ -345,10 +356,16 @@ ignore せずに Dependabot の PR を閉じた場合の挙動は、GitHub Docs 
 - grouped の PR を閉じると、"This pull request was built based on a group rule. Closing it will not ignore any of these versions in future pull requests." と返信します。何も止まりません
 - 実行ログでは、job 定義の `existing-pull-requests` に、数か月前に閉じた PR が入っていました。一方で `ignore-conditions` には、閉じたことによる条件はありません
 
+実装でも、閉じた PR は既存 PR として扱われ、同じ更新先の組が既存 PR に含まれる間は、security update でも PR は作られません。
+
+:::details dependabot-core の実装の詳細（閉じた PR が再作成を止める仕組み）
+
 実装は version update と security update で別の operation ですが、どちらも `existing_pull_requests` で判定します。security update 側（`create_security_update_pull_request.rb`）では、`pr_exists_for_latest_version?` が「同じ依存名・最新バージョン・ディレクトリ」を含む既存 PR を見つけるか、`existing_pull_request` が「更新対象の依存の組（名前・バージョン・ディレクトリ）が同じ」既存 PR を見つけると、PR を作らずに `record_pull_request_exists_for_security_update` を記録します。閉じた PR も `existing_pull_requests` に渡されるため、同じ更新先の組が既存 PR として含まれる間は作られません。security update の更新先は "the minimum version that includes the patch"（GitHub Docs）で、dependabot-core では直接依存は `lowest_security_fix_version`、推移的依存は他を unlock せずに解決できる修正版です。新しい修正版が公開されても、この更新先が変わらなければ組も変わりません。再作成には、選ばれる更新先の組が変わるなどして既存 PR との一致を外れ、ほかの作成条件も満たす必要があります（[GitHub Docs](https://docs.github.com/en/code-security/concepts/supply-chain-security/dependabot-security-updates)、[更新先を選ぶ実装](https://github.com/dependabot/dependabot-core/blob/d3fa616f4a200a8950d1a6f1917d9f33d4f28538/common/lib/dependabot/update_checkers/base.rb#L137-L145)）。
 
 [dependabot-core: create_security_update_pull_request.rb](https://github.com/dependabot/dependabot-core/blob/d3fa616f4a200a8950d1a6f1917d9f33d4f28538/updater/lib/dependabot/updater/operations/create_security_update_pull_request.rb)
 [dependabot-core: update_all_versions.rb#L298-L311](https://github.com/dependabot/dependabot-core/blob/d3fa616f4a200a8950d1a6f1917d9f33d4f28538/updater/lib/dependabot/updater/operations/update_all_versions.rb#L298-L311)
+
+:::
 
 閉じたことは ignore 条件として記録されません。そのため、次の表では件数を「今も効いているもの」で数えました。4 つのリポジトリで人が閉じた Dependabot の PR は 24 件あり、そのうち今も止めているのは ticket の ioredis 6.0.0（version update）1 件だけです。security update の PR を人が閉じたものは、hannibal の qs / fast-uri / postcss と ticket の next の 4 件が実行ログで確かめられましたが、どれも対象の alert はその後 `fixed` になっていて、今は何も止めていません。
 
@@ -381,9 +398,14 @@ ignore せずに Dependabot の PR を閉じた場合の挙動は、GitHub Docs 
 - npm `overrides` の「起因不明」は ticket の sharp です。`frontend/package.json` にありますが、入れた理由の記録が見つかりません。もう 1 件の postcss は PR #162 で GHSA-qx2v-qp2m-jg93 に対応して入れたものです
 - `dependabot.yml` の `ignore` 12 件はすべて非セキュリティ起因（Backstage や NestJS との互換性、TypeScript 7 未対応など）です。ticket の fastify は条件なしで security update も止めますが、入れた理由は非セキュリティなので「セキュリティ起因」の行には数えていません
 - ticket の ioredis は、`ignore`（semver-major）と「PR を閉じる」の両方に入っています。この表は仕組みの適用数を数えるため、1 つの依存に 2 つの仕組みが効いている場合は両方の行に 1 ずつ入ります。意図した重複です
+- code scanning alert の dismiss 32 件はすべて Trivy、`dismissed_reason` は `won't fix` です
+
+:::details 表 3 の集計方法の補足（@dependabot ignore コメント、閉じた security update の PR）
+
 - `@dependabot ignore` コメントは、4 リポジトリ 9 ディレクトリの最新の version update の実行ログ（2026-10-12 / 10-13）の job 定義 `ignore-conditions` で、`source` が `@dependabot ignore command` のものを数えました。idp の `/backstage` に 5 件（@types/react-dom、react、react-dom、react-router、react-router-dom）、ほかは 0 件です
 - 「PR を閉じる（security update）」で人が閉じた累計は hannibal 3 件（qs #629、fast-uri #628、postcss #525）、ticket 1 件（next #349）です。hannibal にはほかに 4 件、作成直前に `for postcss` / `for rollup` / `for vitest` / `for @babel/core` の Dependabot の実行がある閉じた PR がありますが、実行ログの保存期限が切れていて（HTTP 410）security update かどうかは不明です。いずれも alert は `fixed` です
-- code scanning alert の dismiss 32 件はすべて Trivy、`dismissed_reason` は `won't fix` です
+
+:::
 
 ## 表 4. open のままの Dependabot alert：なぜ残っているか
 
@@ -406,7 +428,7 @@ ignore せずに Dependabot の PR を閉じた場合の挙動は、GitHub Docs 
 
 ## 表 5. advisory 別の横断一覧：同じ advisory が 4 つのリポジトリでどう扱われているか
 
-表 3・表 4 の件数のうち、2 つ以上のリポジトリに alert が出た advisory で、今も効いている抑止・上書き、または open があるものだけを抜き出したものです。セルは「扱い; alert の状態 × 件数」で、件数は manifest ごとの alert 数です。code scanning は対象外です。
+表 3・表 4 の件数のうち、2 つ以上のリポジトリに alert が出た advisory で、open または `auto_dismissed` の alert があるものだけを抜き出したものです。セルは「扱い; alert の状態 × 件数」で、件数は manifest ごとの alert 数です。code scanning は対象外です。
 
 | advisory | パッケージ | severity | idp | hannibal | ticket | felis |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -434,11 +456,18 @@ ignore せずに Dependabot の PR を閉じた場合の挙動は、GitHub Docs 
 統一の方針を決める材料として、使っていない公式の機能と、一覧から外した境界を並べます。結論はまだ出していません。
 
 - **`npmAuditIgnoreAdvisories` / `yarn npm audit --ignore`**: Yarn 公式の、advisory を監査結果から除く機能です。期限を持たず、照合するのは npm registry の advisory ID なので、GHSA ID の台帳とは突き合わせられません。idp が独自の監査例外を作った理由はここにあります
-- **期限付きで受け入れる仕組みの他ツールでの実装例**: 監査例外と同じ考え方は、依存スキャナにも組み込まれています。Trivy の `.trivyignore` は `CVE-2019-14697 exp:2023-01-01` の形で期限を付けられ、公式の例ではこれを "Accept the risk until 2023-01-01" と説明しています（`.trivyignore.yaml` では `expired_at`。"If expired_at is not set, the ignore finding is always valid."）。Snyk の ignore は "An issue is ignored until either of these conditions occurs: the ignore period expires, or the vulnerability becomes fixable" で、CLI では `snyk ignore --id=… --expiry=… --reason=…` です。hannibal の code scanning alert の dismiss 32 件は Trivy の結果ですが、`.trivyignore` ではなく GitHub 側の `won't fix` で、期限はありません
-  [Trivy: Filtering](https://trivy.dev/latest/docs/configuration/filtering/)
-  [Snyk: Ignore issues](https://docs.snyk.io/manage-risk/prioritize-issues-for-fixing/ignore-issues)
+- **期限付きで受け入れる仕組みの他ツールでの実装例**: 監査例外と同じ考え方は、Trivy や Snyk などの依存スキャナにも組み込まれていて、ignore に期限を付けられます。hannibal の code scanning alert の dismiss 32 件は Trivy の結果ですが、`.trivyignore` ではなく GitHub 側の `won't fix` で、期限はありません
 - **`--severity high` / `--audit-level=high` の閾値**: 恒久の設定ですが、open な Moderate / Low の alert に記録先が無いのは、この閾値が原因です
 - **呼び出し側の `overrides`**: 台帳と棚卸しは idp 専用で、ticket の 2 件は何にも追跡されていません
+
+:::details Trivy / Snyk の期限付き ignore の仕様
+
+Trivy の `.trivyignore` は `CVE-2019-14697 exp:2023-01-01` の形で期限を付けられ、公式の例ではこれを "Accept the risk until 2023-01-01" と説明しています（`.trivyignore.yaml` では `expired_at`。"If expired_at is not set, the ignore finding is always valid."）。Snyk の ignore は "An issue is ignored until either of these conditions occurs: the ignore period expires, or the vulnerability becomes fixable" で、CLI では `snyk ignore --id=… --expiry=… --reason=…` です。
+
+[Trivy: Filtering](https://trivy.dev/docs/latest/configuration/filtering/)
+[Snyk: Ignore issues](https://docs.snyk.io/scan-fix-and-prevent/fix/prioritize-issues-for-fixing/ignore-issues)
+
+:::
 
 一覧から外した境界もあります。Yarn の `npmMinimalAgeGate`（公開から一定期間たっていないバージョンを解決の候補から外す）と、Dependabot の `cooldown`（version updates を一定日数遅らせる。既定で 3 日）は、修正版の取り込みも遅らせますが、特定の advisory やパッケージを対象にしない一律のポリシーなので、一覧に入れていません。非セキュリティ起因の `resolutions` のうち `@types/react` / `@types/react-dom` は、解除条件の無い方針として入れたもので、「一時的」に当たるかは判断が分かれます。
 
@@ -448,4 +477,4 @@ ignore せずに Dependabot の PR を閉じた場合の挙動は、GitHub Docs 
 
 自分のリポジトリで同じ棚卸しをするなら、まず「この advisory を受容した」という判断がどこに記録されているかを、GitHub 側の状態も含めて洗い出すのが入口になると考えています。台帳を持つ仕組みだけを見ていると、`auto_dismissed` の 13 件や `@dependabot ignore` コメントの 5 件を見落とします。
 
-次回は、これらの台帳・判定基準・出口を、どこまでプラットフォームで共通化し、どこから先を GitHub 側の状態に任せるかを検討した結果を書く予定です。
+後編では、これらの台帳・判定基準・出口を、どこまでプラットフォームで共通化し、どこから先を GitHub 側の状態に任せるかを検討した結果を書く予定です。
