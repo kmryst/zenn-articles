@@ -17,7 +17,7 @@ published: false
 - reusable workflow で複数リポジトリに CI を配っていて、配る側と呼ぶ側で何が揃い、何が揃っていないかを知りたい人
 - 前回記事の「回避策を削除する PR を自動で作る仕組み」を読み、対象外の仕組みがどうなっているか気になった人
 
-https://zenn.dev/kmryst/articles/dependabot-ignore-overrides-removal-pr
+[前回記事：回避策を削除する PR を自動で作る仕組み](https://zenn.dev/kmryst/articles/dependabot-ignore-overrides-removal-pr)
 
 ## 先に結論
 
