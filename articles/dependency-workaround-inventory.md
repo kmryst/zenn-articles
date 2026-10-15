@@ -54,7 +54,7 @@ https://zenn.dev/kmryst/articles/dependabot-ignore-overrides-removal-pr
 | 監査例外（audit exception） | CI の監査（`npm audit` / `yarn npm audit`）で検出された High の advisory を、期限（`expires`、最大 90 日）と追跡 Issue を付けてゲートを通す、このリポジトリの設定。設定名は `scripts/ci/yarn-audit-exceptions.json` / `npm-audit-exceptions.json` と、reusable workflow の input `yarn-audit-exceptions` / `npm-audit-exceptions` です。リスク対応の分類（[NIST の risk response](https://csrc.nist.gov/glossary/term/risk_response)）では risk acceptance に当たりますが、受け入れるのは CI のゲートだけで、Dependabot alert には及びません。リポジトリの運用ドキュメントでは見出しが「期限付き例外」になっていますが、同じものです |
 | 台帳 | 前回記事と同じく、この記事内の呼び名です。上書き・抑止ごとに理由や対応する advisory を記録する JSON ファイルです |
 | 撤去 PR | 前回記事で紹介した、不要になった上書き・抑止を削除する PR を GitHub App が自動で作る仕組みです |
-| 呼び出し側 | reusable workflow を `uses:` で呼ぶリポジトリ。GitHub Docs の "caller workflow" の側です |
+| 呼び出し側 | idp-golden-path の reusable workflow を `uses:` で呼び出すリポジトリ（GitHub Docs の caller workflow を持つ側）。リポジトリの docs では消費側とも書いていて、ADR 0008 の「呼び出し側リポジトリ」と同じものです |
 
 severity は GitHub の表示（Critical / High / Moderate / Low）で書きます。REST API では Moderate が `medium` です。
 
@@ -105,20 +105,23 @@ CI の監査は、GitHub の alert の状態を見ていません。
 
 まず、4 つのリポジトリがどの検知・抑止を使っているかです。これがないと、後の表の「0 件」と「対象外」を区別できません。
 
-| リポジトリ | CI の監査 | 監査例外 | Dependency Unblock Check | Dependabot alerts | security updates | version updates | auto-triage preset | code scanning の送り元 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| idp | trigger で実行、yarn + npm | 台帳ファイル | trigger で実行 | 有効 | 有効 | npm ×3、actions | 有効 | CodeQL、trigger で実行 |
-| hannibal | `uses` で呼び出し（`@v1`）×2 | input、root のみ | — | 有効 | 有効 | npm ×2、actions | 有効 | Trivy、独自 workflow |
-| ticket | `uses` で呼び出し（`@v1.7.2`）×2 | input、root + frontend | `uses` で呼び出し（`@v1.7.2`） | 有効 | 有効 | npm ×2、actions、terraform | 有効 | Trivy + CodeQL、`uses` で呼び出し（`@v1.7.2`） |
-| felis | — | — | — | 有効 | 有効 | npm ×2、uv、actions | 有効 | なし |
+| リポジトリ | 役割 | 参照（ref） | CI の監査 | 監査例外 | Dependency Unblock Check | Dependabot alerts | security updates | version updates | auto-triage preset | code scanning の送り元 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| idp | プラットフォーム | 同一リポジトリ | yarn + npm | 台帳ファイル | あり | 有効 | 有効 | npm ×3、actions | 有効 | CodeQL |
+| hannibal | 呼び出し側 | `@v1`（移動 major タグ） | npm ×2 | input、root のみ | — | 有効 | 有効 | npm ×2、actions | 有効 | Trivy（Golden Path 外） |
+| ticket | 呼び出し側 | `@v1.7.2`（release tag） | npm ×2 | input、root + frontend | あり | 有効 | 有効 | npm ×2、actions、terraform | 有効 | Trivy + CodeQL |
+| felis | 呼び出し側 | — | — | — | — | 有効 | 有効 | npm ×2、uv、actions | 有効 | なし |
 
-- 実行のされ方は 3 通りです。「trigger で実行」は、そのリポジトリのイベント（`pull_request`、週次の `schedule`）が workflow を起動するもの（GitHub Docs: "Workflow triggers are events that cause a workflow to run"）。「`uses` で呼び出し」は、caller workflow が idp の reusable workflow を `uses:` で呼ぶもので、括弧内は ref です（GitHub Docs: Reusing workflows）。「独自 workflow」は、idp の reusable workflow を使わず、そのリポジトリの workflow に action を直接書いているものです
-- CI の監査は idp の reusable workflow `dependency-audit.yml` です。idp では trigger で実行し、Yarn（`backstage/`）と npm の両方を監査します。hannibal は root と `client`、ticket は root と `frontend` の 2 つの caller job で呼びます。felis は依存関係の workflow を 1 つも呼ばず、独自の監査 workflow もありません
+- 参照（ref）は、依存関係の reusable workflow を `uses:` で呼ぶときの `@{ref}` です。GitHub Docs の `{ref}` は SHA / release tag / branch で、"Using the commit SHA is the safest option for stability and security" とされています。`v1` は idp の ADR 0008 の移動 major タグで、v1 系の最新に追従します。`v1.7.2` は固定です。idp は同一リポジトリの workflow なので、常にそのコミットの版で動きます。felis は依存関係の workflow を 1 つも呼んでいません
+  [GitHub Docs: Reusing workflows](https://docs.github.com/en/actions/sharing-automations/reusing-workflows)
+- ticket は依存関係・セキュリティ系の workflow（dependency-audit、dependency-unblock-check、codeql、trivy-image、trivy-config）を `@v1.7.2`、それ以外（issue-template-check、markdown-lint、pr-commitlint、sync-labels、toolchain-version-check）を `@v1` で呼んでいて、1 つのリポジトリで 2 つの ref が混ざっています
+- CI の監査は idp の reusable workflow `dependency-audit.yml` です。idp は `pull_request` と週次の `schedule` で起動し、Yarn（`backstage/`）と npm の両方を監査します。hannibal は root と `client`、ticket は root と `frontend` の 2 つの caller job で呼びます。felis は依存関係の workflow を呼ばず、Golden Path 外の監査 workflow もありません
 - 監査例外は、idp では台帳ファイル、呼び出し側では workflow の input（`npm-audit-exceptions`）にインラインの JSON で渡します。hannibal の `client` job には input がなく、root 以外で High が出ても例外を渡す手段がありません
-- Dependency Unblock Check は、`dependabot.yml` の `ignore` を週次で「もう外せるか」試す reusable workflow です。idp（trigger で実行）と ticket（`uses` で呼び出し）だけが使っています
+- Dependency Unblock Check は、`dependabot.yml` の `ignore` を週次で「もう外せるか」試す reusable workflow です。idp と ticket だけが使っています
 - Dependabot alerts と Dependabot security updates は 4 つとも有効でした（REST API の `vulnerability-alerts` と `automated-security-fixes` で確認）。version updates の列は `dependabot.yml` の `updates` エントリの内訳です
 - auto-triage preset は public リポジトリで既定で有効で、4 つすべてに `auto_dismissed` の alert があります。設定画面（Settings → Advanced Security → Dependabot rules）は API がなく、idp だけ 2026-10-15 に確認しました。有効なのは GitHub preset の "Dismiss low-impact alerts for development-scoped dependencies" 1 つで、custom rules は 0 件です。呼び出し側 3 つの画面は未確認です
-- code scanning の送り元は `code-scanning/alerts` の `tool.name` です。hannibal の Trivy は独自 workflow で、`aquasecurity/trivy-action` を直接書いて SARIF を送っています。idp の `trivy-image.yml` / `trivy-config.yml` は使っていません。felis は code scanning の analyses が 404 でした
+- code scanning の送り元は `code-scanning/alerts` の `tool.name` です。「Golden Path 外」は、Spotify が golden path を "the 'opinionated and supported' path to 'build something'" と定義したのに倣い、idp の reusable workflow（`trivy-image.yml` / `trivy-config.yml`）を使わず、hannibal が自分の workflow に `aquasecurity/trivy-action` を直接書いて SARIF を送っていることを指します。felis は code scanning の analyses が 404 でした
+  [Spotify Engineering: How We Use Golden Paths to Solve Fragmentation in Our Software Ecosystem](https://engineering.atspotify.com/2020/08/how-we-use-golden-paths-to-solve-fragmentation-in-our-software-ecosystem)
 
 ## 表 2. 仕組みの性質：何を止め、誰が判定し、どこに記録し、どう外すか
 
