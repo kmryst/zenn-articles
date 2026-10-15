@@ -125,7 +125,7 @@ CI の監査は、GitHub の alert の状態を見ていません。
 
 ## 表 2. 仕組みの性質：何を止め、誰が判定し、どこに記録し、どう外すか
 
-9 つの仕組みを、起因（セキュリティ / 非セキュリティ）と package manager で分けると 15 行になります。横幅の都合で 3 つの表に分けますが、行は同じです。
+9 つの仕組みを、起因（セキュリティ / 非セキュリティ）と package manager で分けると 15 行になります。横幅の都合で 2a〜2c の 3 つの表に分けますが、行は同じです。判定と撤去 PR がどの workflow で動くかは、表 2d にまとめます。
 
 ### 表 2a. 起因・起点・止めるもの
 
@@ -157,28 +157,26 @@ CI の監査は、GitHub の alert の状態を見ていません。
 
 ### 表 2b. 判定・記録・期限
 
-| 仕組み | 判定の実装場所 | 記録の持ち主 | 記録先（idp） | 記録先（呼び出し側） | 期限 |
-| --- | --- | --- | --- | --- | --- |
-| Yarn `resolutions`（セキュリティ起因） | プラットフォーム | リポジトリ | `package.json` + 台帳 | — | なし |
-| Yarn `resolutions`（非セキュリティ起因） | プラットフォーム | リポジトリ | `package.json` + 台帳 | — | なし |
-| npm `overrides`（セキュリティ起因） | プラットフォーム | リポジトリ | `package.json` + 台帳 | `package.json` のみ | なし |
-| npm `overrides`（非セキュリティ起因） | プラットフォーム | リポジトリ | `package.json` + 台帳（未作成） | `package.json` のみ | なし |
-| 監査例外（yarn） | プラットフォーム | リポジトリ | 台帳 | — | 最大 90 日 |
-| 監査例外（npm） | プラットフォーム | リポジトリ | 台帳 | workflow の input | 最大 90 日 |
-| Dependabot alert の dismiss | GitHub | GitHub | GitHub | GitHub | なし |
-| Dependabot auto-triage rules | GitHub | GitHub | GitHub | GitHub | なし |
-| `dependabot.yml` の `ignore`（非セキュリティ起因） | プラットフォーム | リポジトリ | `dependabot.yml` + 台帳 | `dependabot.yml` + 台帳 | `review-by` |
-| `dependabot.yml` の `ignore`（セキュリティ起因） | 各リポジトリ | リポジトリ | `dependabot.yml` | `dependabot.yml` | なし |
-| `@dependabot ignore` コメント（非セキュリティ起因） | GitHub | GitHub | GitHub | GitHub | なし |
-| `@dependabot ignore` コメント（セキュリティ起因） | GitHub | GitHub | GitHub | GitHub | なし |
-| PR を閉じる（version update） | GitHub | なし | なし | なし | なし |
-| PR を閉じる（security update） | GitHub | なし | なし | なし | なし |
-| code scanning alert の dismiss | GitHub | GitHub | GitHub | GitHub | なし |
+| 仕組み | 記録の持ち主 | 記録先（idp） | 記録先（呼び出し側） | 期限 |
+| --- | --- | --- | --- | --- |
+| Yarn `resolutions`（セキュリティ起因） | リポジトリ | `package.json` + 台帳 | — | なし |
+| Yarn `resolutions`（非セキュリティ起因） | リポジトリ | `package.json` + 台帳 | — | なし |
+| npm `overrides`（セキュリティ起因） | リポジトリ | `package.json` + 台帳 | `package.json` のみ | なし |
+| npm `overrides`（非セキュリティ起因） | リポジトリ | `package.json` + 台帳（未作成） | `package.json` のみ | なし |
+| 監査例外（yarn） | リポジトリ | 台帳 | — | 最大 90 日 |
+| 監査例外（npm） | リポジトリ | 台帳 | workflow の input | 最大 90 日 |
+| Dependabot alert の dismiss | GitHub | GitHub | GitHub | なし |
+| Dependabot auto-triage rules | GitHub | GitHub | GitHub | なし |
+| `dependabot.yml` の `ignore`（非セキュリティ起因） | リポジトリ | `dependabot.yml` + 台帳 | `dependabot.yml` + 台帳 | `review-by` |
+| `dependabot.yml` の `ignore`（セキュリティ起因） | リポジトリ | `dependabot.yml` | `dependabot.yml` | なし |
+| `@dependabot ignore` コメント（非セキュリティ起因） | GitHub | GitHub | GitHub | なし |
+| `@dependabot ignore` コメント（セキュリティ起因） | GitHub | GitHub | GitHub | なし |
+| PR を閉じる（version update） | なし | なし | なし | なし |
+| PR を閉じる（security update） | なし | なし | なし | なし |
+| code scanning alert の dismiss | GitHub | GitHub | GitHub | なし |
 
-- 判定の実装場所は、期限切れや「もう外せるか」の判定を実装しているのが誰かです。プラットフォーム = idp の reusable workflow と `scripts/ci/*.mjs`、GitHub = GitHub の機能そのもの、各リポジトリ = 設定ファイルを書くだけで判定はどこにもない
 - 記録の持ち主は、記録を Git で管理できるかです。リポジトリ = リポジトリ内のファイル、GitHub = GitHub 側にしか残らない（alert の `dismissed_reason` / `dismissed_comment`、comment commands の履歴）。「PR を閉じる」は記録が残りません
 - 台帳は idp の `scripts/ci/` にあります。`yarn-resolutions.json`、`yarn-resolutions-non-security.json`、`npm-overrides.json`（空）、`npm-overrides-non-security.json`（未作成）、`yarn-audit-exceptions.json`、`npm-audit-exceptions.json`、`dependabot-unblock.json`（`dependabot.yml` の `ignore` と 1:1）
-- `resolutions` / `overrides` の台帳と棚卸しの job は、workflow の `if: github.repository == 'kmryst/idp-golden-path'` で idp 専用です。呼び出し側では動きません。ticket の `frontend/package.json` の `overrides` 2 件は、台帳にも棚卸しにも載っていません
 
 ### 表 2c. 外す判定と出口
 
@@ -203,8 +201,32 @@ CI の監査は、GitHub の alert の状態を見ていません。
 - 「全部外して再出現を見る」は、台帳の上書きをすべて外して依存を解決し直し、台帳に書いた advisory が再出現するかを見ます。前回記事で npm `overrides` について指摘された「まとめて外すと、まだ必要な上書きが不要に見える」問題を、Yarn 側はまだ抱えています
 - 「probe で試しに上げる」は、上書きや `ignore` を外した状態で、台帳に書いたコマンド（依存の再解決やビルド）が通るかを見ます。非セキュリティ起因のものは advisory を持たないためです
 - 監査例外は、期限が来るまで不要かどうかを判定しません。監査で検出されなくなると job summary に警告が出るだけです
-- 呼び出し側の `ignore` の出口が「exit 10 + Issue コメント」なのは、撤去 PR を作る GitHub App を呼び出し側にインストールしていないためです
+- 呼び出し側の `ignore` の出口が「exit 10 + Issue コメント」になる理由は、表 2d の撤去 PR の job の条件です
 - 棚卸しや監査は週次の `schedule` で動きます。連続して失敗しても、GitHub Actions 標準の失敗通知メール以外には何も起きません
+
+### 表 2d. 判定と撤去 PR の実装場所：どの workflow の job が、どのリポジトリで動くか
+
+表 2b / 2c の判定と出口のうち、プラットフォームが実装しているものです。残りの仕組み（dismiss、auto-triage rules、`@dependabot ignore` コメント、PR を閉じる、code scanning alert の dismiss、セキュリティ起因の `ignore`）には判定の実装がなく、GitHub の機能か設定ファイルだけです。
+
+| 機能 | workflow | job | スクリプト | trigger | idp | hannibal | ticket | felis |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 台帳と `resolutions` の同期検査 | dependency-audit | `yarn-resolutions-registry` | `yarn-resolutions-audit.mjs` | `pull_request`、`schedule` | 動く | 動かない | 動かない | 呼んでいない |
+| `resolutions` の判定 | dependency-audit | `yarn-resolutions-inventory` | `yarn-resolutions-audit.mjs` | `schedule` | 動く | 動かない | 動かない | 呼んでいない |
+| `resolutions` の撤去 PR | dependency-audit | `yarn-resolutions-removal-pr` | `yarn-resolutions-audit.mjs` | `schedule` | 動く | 動かない | 動かない | 呼んでいない |
+| 台帳と `overrides` の同期検査 | dependency-audit | `npm-overrides-registry` | `npm-overrides-audit.mjs` | `pull_request`、`schedule` | 動く | 動かない | 動かない | 呼んでいない |
+| `overrides` の判定 | dependency-audit | `npm-overrides-inventory` | `npm-overrides-audit.mjs` | `schedule` | 動く | 動かない | 動かない | 呼んでいない |
+| `overrides` の撤去 PR | dependency-audit | `npm-overrides-removal-pr` | `npm-overrides-audit.mjs` | `schedule` | 動く | 動かない | 動かない | 呼んでいない |
+| 監査例外の判定 | dependency-audit | `dependency-audit` | `yarn-audit-policy.mjs`、`npm-audit-policy.mjs` | `pull_request`、`schedule`、`workflow_call` | 動く | 動く | 動く | 呼んでいない |
+| `ignore` の判定 | dependency-unblock-check | `dependency-unblock-check` | `dependabot-unblock-check.mjs` | `schedule`、`workflow_call` | 動く | 呼んでいない | 動く | 呼んでいない |
+| `ignore` の撤去 PR | dependency-unblock-check | `dependabot-ignore-removal-pr` | `dependabot-unblock-check.mjs` | `schedule`、`workflow_call` | 動く | 呼んでいない | 動かない | 呼んでいない |
+
+- workflow は idp の `.github/workflows/dependency-audit.yml` と `dependency-unblock-check.yml`、スクリプトは `scripts/ci/` 配下です。trigger は GitHub Docs の "Workflow triggers are events that cause a workflow to run" の意味で、`workflow_call` は呼び出し側の caller workflow から呼ばれる trigger です。どちらの workflow も `workflow_dispatch` で手動実行できます
+- 「動かない」は、job に `if: github.repository == 'kmryst/idp-golden-path'` が付いていて、呼び出し側で `workflow_call` 経由で呼んでも skip されるものです。`resolutions` / `overrides` の 6 job はこれに加えて `package-manager` が yarn のときだけ動くため、npm で呼ぶ呼び出し側では二重に動きません。「呼んでいない」は、表 1 のとおりその workflow を caller workflow から呼んでいないものです
+- `ignore` の判定は呼び出し側でも動きますが、撤去 PR の job は idp 専用です。呼び出し側では判定が「外せる」になると exit 10 と追跡 Issue へのコメントで知らせます（表 2c の出口）
+- 撤去 PR を作る主体は GitHub App です。`actions/create-github-app-token` で App のトークンを取り、`peter-evans/create-pull-request` で PR を作ります。App は idp にしかインストールしていません
+- 監査例外の判定は、idp の Yarn（`backstage/`）と呼び出し側の npm が同じ `dependency-audit` job です。idp 自身の root / skeleton（npm）だけは別 job `npm-dependency-audit`（idp 専用）で、同じ `npm-audit-policy.mjs` を使います
+- hannibal の `@v1` と ticket の `@v1.7.2` は同じコミット（`dca5d23`、2026-10-13）を指していて、この表の job と `if:` 条件はどちらにも含まれています。idp の `main`（`1aa21e0`）との差分も、この 2 つの workflow にはありません
+- `resolutions` の撤去 PR は非セキュリティ起因の台帳が対象で、セキュリティ起因の `resolutions` は判定でジョブが失敗するだけです（表 2c）。ticket の `frontend/package.json` の `overrides` 2 件は、同期検査も判定も idp 専用のため、台帳にも棚卸しにも載っていません
 
 ## 監査例外とは何か
 
