@@ -1,5 +1,5 @@
 ---
-title: "依存関係の workaround 大統一理論！！！・序章 ～泣きながら現状を直視する～"
+title: "依存関係の workaround 大統一理論！！！ ～泣きながら現状を直視する～"
 emoji: "🗂️"
 type: "tech"
 topics: ["npm", "yarn", "dependabot", "githubactions", "security"]
